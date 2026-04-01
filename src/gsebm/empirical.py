@@ -18,6 +18,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypeAlias
 
+import numpy as np
+from scipy.interpolate import CubicSpline, PchipInterpolator
+
 FloatSeries: TypeAlias = tuple[float, ...]
 
 
@@ -63,6 +66,31 @@ class EmpiricalData:
             raise ValueError(
                 "x2 and latent_heat_flux_coefficient must have the same length."
             )
+
+
+@dataclass(frozen=True)
+class EmpiricalInterpolants:
+    """Continuous latitude-dependent empirical fields."""
+
+    heat_capacity: CubicSpline
+    solar_irradiance: CubicSpline
+    b_parameter: CubicSpline
+    surface_height_offset: CubicSpline
+    sensible_heat_flux_coefficient: CubicSpline
+    latent_heat_flux_coefficient: CubicSpline
+
+
+@dataclass(frozen=True)
+class IVPEmpiricalFields:
+    """Empirical fields sampled on a fixed IVP solver grid."""
+
+    x: np.ndarray  # [1]
+    heat_capacity: np.ndarray  # [cal cm^-2 K^-1]
+    solar_irradiance: np.ndarray  # [cal cm^-2 s^-1]
+    b_parameter: np.ndarray  # [1]
+    surface_height_offset: np.ndarray  # [m]
+    sensible_heat_flux_coefficient: np.ndarray  # [cal K^-1 cm^-2 s^-1]
+    latent_heat_flux_coefficient: np.ndarray  # [cal dyn^-1 s^-1]
 
 
 def latitude_grid_x1() -> FloatSeries:
@@ -168,3 +196,100 @@ def default_empirical_data(remove_negative_k2: bool = True) -> EmpiricalData:
             includes_equator=False,
         ),
     )
+
+
+def _as_float_array(values: FloatSeries | np.ndarray) -> np.ndarray:
+    return np.asarray(values, dtype=float)
+
+
+def _zero_slope_spline(x: FloatSeries | np.ndarray, y: FloatSeries | np.ndarray) -> CubicSpline:
+    """Build a cubic spline with vanishing endpoint slopes."""
+
+    return CubicSpline(_as_float_array(x), _as_float_array(y), bc_type=((1, 0.0), (1, 0.0)))
+
+
+def build_empirical_interpolants(
+    empirical_data: EmpiricalData | None = None,
+    *,
+    remove_negative_k2: bool = True,
+    constrain_boundary_slopes: bool = True,
+) -> EmpiricalInterpolants:
+    """Build continuous empirical fields over latitude.
+
+    When ``constrain_boundary_slopes`` is enabled, the fields originally
+    tabulated on ``x2`` are first transferred to ``x1`` with a monotone
+    PCHIP interpolator. Final cubic splines are then built with zero slopes
+    at the endpoints to match the intended boundary behavior.
+    """
+
+    data = empirical_data or default_empirical_data(remove_negative_k2=remove_negative_k2)
+    x1 = _as_float_array(data.x1)
+    x2 = _as_float_array(data.x2)
+
+    if constrain_boundary_slopes:
+        b_on_x1 = PchipInterpolator(x2, _as_float_array(data.b_parameter))(x1)
+        z_on_x1 = PchipInterpolator(x2, _as_float_array(data.surface_height_offset))(x1)
+        k1_on_x1 = PchipInterpolator(x2, _as_float_array(data.sensible_heat_flux_coefficient))(x1)
+        k2_on_x1 = PchipInterpolator(x2, _as_float_array(data.latent_heat_flux_coefficient))(x1)
+        return EmpiricalInterpolants(
+            heat_capacity=_zero_slope_spline(x1, data.heat_capacity),
+            solar_irradiance=_zero_slope_spline(x1, data.solar_irradiance),
+            b_parameter=_zero_slope_spline(x1, b_on_x1),
+            surface_height_offset=_zero_slope_spline(x1, z_on_x1),
+            sensible_heat_flux_coefficient=_zero_slope_spline(x1, k1_on_x1),
+            latent_heat_flux_coefficient=_zero_slope_spline(x1, k2_on_x1),
+        )
+
+    return EmpiricalInterpolants(
+        heat_capacity=CubicSpline(x1, _as_float_array(data.heat_capacity)),
+        solar_irradiance=CubicSpline(x1, _as_float_array(data.solar_irradiance)),
+        b_parameter=CubicSpline(x2, _as_float_array(data.b_parameter)),
+        surface_height_offset=CubicSpline(x2, _as_float_array(data.surface_height_offset)),
+        sensible_heat_flux_coefficient=CubicSpline(x2, _as_float_array(data.sensible_heat_flux_coefficient)),
+        latent_heat_flux_coefficient=CubicSpline(x2, _as_float_array(data.latent_heat_flux_coefficient)),
+    )
+
+
+def sample_empirical_fields(
+    x_grid: FloatSeries | np.ndarray,
+    interpolants: EmpiricalInterpolants,
+) -> IVPEmpiricalFields:
+    """Sample continuous empirical fields on a fixed spatial grid."""
+
+    x = _as_float_array(x_grid)
+    return IVPEmpiricalFields(
+        x=x,
+        heat_capacity=np.asarray(interpolants.heat_capacity(x), dtype=float),
+        solar_irradiance=np.asarray(interpolants.solar_irradiance(x), dtype=float),
+        b_parameter=np.asarray(interpolants.b_parameter(x), dtype=float),
+        surface_height_offset=np.asarray(interpolants.surface_height_offset(x), dtype=float),
+        sensible_heat_flux_coefficient=np.asarray(
+            interpolants.sensible_heat_flux_coefficient(x),
+            dtype=float,
+        ),
+        latent_heat_flux_coefficient=np.asarray(
+            interpolants.latent_heat_flux_coefficient(x),
+            dtype=float,
+        ),
+    )
+
+
+def prepare_ivp_empirical_fields(
+    x_grid: FloatSeries | np.ndarray,
+    empirical_data: EmpiricalData | None = None,
+    *,
+    remove_negative_k2: bool = True,
+    constrain_boundary_slopes: bool = True,
+) -> IVPEmpiricalFields:
+    """Prepare empirical fields for IVP integration on a fixed solver grid.
+
+    Build the interpolants once, then sample all latitude-only quantities
+    once on the solver grid.
+    """
+
+    interpolants = build_empirical_interpolants(
+        empirical_data=empirical_data,
+        remove_negative_k2=remove_negative_k2,
+        constrain_boundary_slopes=constrain_boundary_slopes,
+    )
+    return sample_empirical_fields(x_grid, interpolants)

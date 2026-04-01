@@ -15,6 +15,8 @@ Implemented so far:
 - a preserved MATLAB reference implementation in `matlab/`
 - Python parameter objects in `src/gsebm/parameters.py`
 - empirical latitude-dependent data objects in `src/gsebm/empirical.py`
+- interpolation and IVP preprocessing for empirical fields in
+  `src/gsebm/empirical.py`
 - shared local physics formulas in `src/gsebm/physics.py`
 - tests for package import, default parameter values, empirical data, and
   local physics relationships
@@ -55,6 +57,15 @@ grids are not themselves the PDE discretization grid.
 The model is treated as hemispherically symmetric in the data layer, so the
 tabulated one-hemisphere values are mirrored across the equator to produce
 pole-to-pole inputs on the normalized latitude interval `[-1, 1]`.
+
+For the time-dependent solve, the current Python design does not intend to
+evaluate spline objects inside every PDE right-hand-side call. Instead, the
+empirical layer now supports:
+
+- continuous interpolants for the latitude-dependent fields
+- one-time sampling of those fields on a fixed IVP solver grid
+
+This keeps the eventual IVP integration path focused on array operations.
 
 The shared physics layer currently implemented in Python includes:
 
@@ -134,6 +145,7 @@ interpolated before use in the PDE and steady-state equations. That is why
 the Python port separates:
 
 - empirical data
+- interpolation and preprocessing
 - local physics formulas
 - solver-specific equation assembly
 
