@@ -18,8 +18,9 @@ Implemented so far:
 - interpolation and IVP preprocessing for empirical fields in
   `src/gsebm/empirical.py`
 - shared local physics formulas in `src/gsebm/physics.py`
+- a method-of-lines IVP solver in `src/gsebm/ivp.py`
 - tests for package import, default parameter values, empirical data, and
-  local physics relationships
+  local physics and IVP relationships
 
 ## Model Overview
 
@@ -79,6 +80,14 @@ The shared physics layer currently implemented in Python includes:
 These functions operate on already-evaluated local quantities. They do not
 yet assemble the full PDE or connect to time-stepping or boundary-value
 solvers.
+
+The Python IVP path is now assembled separately from the local physics
+layer. It uses:
+
+- a fixed latitude grid with near-pole shifted points
+- precomputed latitude-only empirical fields on that grid
+- a divergence-form transport discretization with zero boundary face flux
+- `scipy.integrate.solve_ivp` for time integration
 
 <details>
 <summary>Extended Physics Description</summary>
@@ -149,6 +158,11 @@ the Python port separates:
 - local physics formulas
 - solver-specific equation assembly
 
+The current IVP implementation follows the same continuous model structure
+as the reference code, but it does not reproduce MATLAB `pdepe`
+internals. The time-dependent solver is a custom method-of-lines
+implementation built around SciPy's ODE integrators.
+
 </details>
 
 ## Layout
@@ -170,7 +184,7 @@ The expected sequence is:
 3. shared physical relationships
 4. interpolation and preprocessing for empirical fields
 5. IVP and BVP model components
-6. diagnostics, plotting, and solver wiring
+6. diagnostics, plotting, and comparison workflows
 
 ## Running Tests
 
