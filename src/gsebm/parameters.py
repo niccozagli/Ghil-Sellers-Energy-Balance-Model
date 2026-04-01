@@ -11,6 +11,7 @@ class ModelParameters:
     """Physical parameters for the Ghil-Sellers energy balance model."""
 
     mu: float = 1.0  # [1]
+    albedo_min: float = 0.25  # [1]
     albedo_max: float = 0.6  # [1]
     c1: float = 0.009  # [K^-1]
     c2: float = 0.0065  # [K m^-1]
@@ -20,6 +21,10 @@ class ModelParameters:
     sig: float = 1.356e-12  # [cal cm^-2 s^-1 K^-4]
     m1: float = 0.5  # [1]
     um: float = 283.16  # [K]
+
+    def __post_init__(self) -> None:
+        if self.albedo_min > self.albedo_max:
+            raise ValueError("albedo_min must be less than or equal to albedo_max.")
 
 
 @dataclass(frozen=True)

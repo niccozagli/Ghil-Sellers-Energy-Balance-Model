@@ -14,6 +14,7 @@ class PackageSmokeTest(unittest.TestCase):
         params = ModelParameters()
 
         self.assertEqual(params.mu, 1.0)
+        self.assertEqual(params.albedo_min, 0.25)
         self.assertEqual(params.albedo_max, 0.6)
         self.assertEqual(params.c1, 0.009)
         self.assertEqual(params.c2, 0.0065)
@@ -44,6 +45,10 @@ class PackageSmokeTest(unittest.TestCase):
     def test_invalid_temperature_derivative_method_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             RunSettings(temperature_derivative_method=4)
+
+    def test_invalid_albedo_bounds_are_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ModelParameters(albedo_min=0.7, albedo_max=0.6)
 
 
 if __name__ == "__main__":

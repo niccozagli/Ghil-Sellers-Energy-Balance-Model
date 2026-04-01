@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "Python port of the Ghil-Sellers Energy Balance Model."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "numpy>=1.26",
+]
 
 [project.scripts]
 gsebm = "gsebm.cli:main"

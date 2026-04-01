@@ -14,6 +14,16 @@ from gsebm.empirical import (
     latitude_grid_x2,
     raw_empirical_data,
 )
+from gsebm.physics import (
+    absorbed_shortwave_radiation,
+    clamp_albedo,
+    latitude_weight,
+    moisture_factor,
+    net_radiative_energy_transport,
+    outgoing_longwave_radiation,
+    surface_albedo,
+    total_diffusivity,
+)
 
 __all__ = [
     "__version__",
@@ -27,6 +37,14 @@ __all__ = [
     "latitude_grid_x1",
     "latitude_grid_x2",
     "raw_empirical_data",
+    "absorbed_shortwave_radiation",
+    "clamp_albedo",
+    "latitude_weight",
+    "moisture_factor",
+    "net_radiative_energy_transport",
+    "outgoing_longwave_radiation",
+    "surface_albedo",
+    "total_diffusivity",
 ]
 
 __version__ = "0.1.0"
