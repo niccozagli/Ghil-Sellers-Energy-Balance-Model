@@ -13,7 +13,6 @@ dependencies = [
     "matplotlib>=3.8",
     "numpy>=1.26",
     "scipy>=1.13",
+    "typer>=0.12",
+    "xarray>=2024.6",
 ]
-
-[project.scripts]
-gsebm = "gsebm.cli:main"

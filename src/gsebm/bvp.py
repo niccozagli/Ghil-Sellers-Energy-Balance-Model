@@ -195,7 +195,7 @@ def build_bvp_initial_guess(
     Supported modes are:
 
     - ``"scalar"``: constant temperature with zero slope
-    - ``"ivp"``: final IVP state plus the cosine perturbation used in MATLAB
+    - ``"ivp"``: final IVP state plus a cosine perturbation
     - ``"custom"``: user-supplied profile, differentiated analytically
     """
 

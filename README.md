@@ -18,8 +18,13 @@ Implemented so far:
 - interpolation and IVP preprocessing for empirical fields in
   `src/gsebm/empirical.py`
 - shared local physics formulas in `src/gsebm/physics.py`
+- meridional heat-transfer diagnostics in `src/gsebm/diagnostics.py`
 - a method-of-lines IVP solver in `src/gsebm/ivp.py`
 - a steady-state BVP solver in `src/gsebm/bvp.py`
+- separate reusable warm/cold and edge-state workflows in `src/gsebm/run.py`
+- repository path helpers in `src/gsebm/paths.py`
+- runnable scripts in `scripts/run_warm_cold_state.py` and
+  `scripts/run_edge_state.py`
 - tests for package import, default parameter values, empirical data, and
   local physics, IVP, and BVP relationships
 
@@ -178,6 +183,8 @@ implementation built around SciPy's ODE integrators.
 ## Layout
 
 - `matlab/`: reference implementation
+- `analysis/`: marimo analysis apps for saved datasets
+- `scripts/`: runnable research scripts
 - `src/gsebm/`: Python package for the new implementation
 - `tests/`: Python test suite
 
@@ -202,4 +209,60 @@ At the current stage, the lightweight test suite can be run with:
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests
+```
+
+## Running The Scripts
+
+The current non-prototype entry points are:
+
+```bash
+uv run python scripts/run_warm_cold_state.py
+uv run python scripts/run_edge_state.py
+```
+
+The warm/cold script solves the warm-state and cold-state IVP branches and
+writes a NetCDF file to:
+
+```text
+<repo-root>/data/<filename>.nc
+```
+
+with coordinates:
+
+- `time`
+- `latitude`
+
+and variables:
+
+- `warm_state_temperature`
+- `cold_state_temperature`
+
+The dataset attributes store the run settings, model parameters, solver
+method, and the warm/cold initial temperatures.
+
+The edge-state script solves the edge-state BVP branch and writes a NetCDF
+file to:
+
+```text
+<repo-root>/data/<filename>.nc
+```
+
+with coordinate:
+
+- `latitude`
+
+and variables:
+
+- `edge_state_temperature`
+- `edge_state_temperature_derivative`
+
+The dataset attributes store the run settings, model parameters, the edge
+initial temperature, and the BVP solver controls.
+
+## Analysis
+
+The saved NetCDF outputs can be explored with the marimo app in:
+
+```bash
+uv run marimo edit analysis/analysis.py
 ```
