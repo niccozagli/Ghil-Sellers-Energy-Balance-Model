@@ -19,8 +19,9 @@ Implemented so far:
   `src/gsebm/empirical.py`
 - shared local physics formulas in `src/gsebm/physics.py`
 - a method-of-lines IVP solver in `src/gsebm/ivp.py`
+- a steady-state BVP solver in `src/gsebm/bvp.py`
 - tests for package import, default parameter values, empirical data, and
-  local physics and IVP relationships
+  local physics, IVP, and BVP relationships
 
 ## Model Overview
 
@@ -77,9 +78,8 @@ The shared physics layer currently implemented in Python includes:
 - absorbed shortwave radiation
 - net radiative energy transport
 
-These functions operate on already-evaluated local quantities. They do not
-yet assemble the full PDE or connect to time-stepping or boundary-value
-solvers.
+These functions operate on already-evaluated local quantities. They are
+shared by the time-dependent IVP solver and the steady-state BVP solver.
 
 The Python IVP path is now assembled separately from the local physics
 layer. It uses:
@@ -88,6 +88,16 @@ layer. It uses:
 - precomputed latitude-only empirical fields on that grid
 - a divergence-form transport discretization with zero boundary face flux
 - `scipy.integrate.solve_ivp` for time integration
+
+The Python BVP path is assembled separately from the IVP because it needs
+continuous coefficient functions and their latitude derivatives on an
+adaptive mesh. It uses:
+
+- continuous empirical interpolants rather than pre-sampled IVP arrays
+- a first-order steady-state ODE system for `[T, dT/dx]`
+- zero-slope boundary conditions at both poles
+- `scipy.integrate.solve_bvp` for the stationary solve
+- either a constant guess or an IVP-based perturbed initial guess
 
 <details>
 <summary>Extended Physics Description</summary>
@@ -177,14 +187,14 @@ The port proceeds in small steps. The immediate goal is to translate the
 model into clear Python modules while keeping the implementation easy to
 compare against the reference code.
 
-The expected sequence is:
+The current sequence is:
 
 1. parameters and default settings
 2. empirical latitude-dependent data
 3. shared physical relationships
 4. interpolation and preprocessing for empirical fields
 5. IVP and BVP model components
-6. diagnostics, plotting, and comparison workflows
+6. diagnostics, plotting, unstable-branch workflows, and comparison tools
 
 ## Running Tests
 

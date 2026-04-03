@@ -31,20 +31,12 @@ class PackageSmokeTest(unittest.TestCase):
         self.assertEqual(settings.final_time, 1e9)
         self.assertEqual(settings.ivp_initial_temperature, 280.0)
         self.assertEqual(settings.bvp_initial_temperature, 0.0)
-        self.assertEqual(settings.temperature_derivative_method, 1)
         self.assertTrue(settings.remove_negative_k2)
         self.assertTrue(settings.constrain_empirical_function_slopes)
-        self.assertEqual(settings.symmetry_mode, 0)
         self.assertEqual(settings.delta, 1e-3)
         self.assertEqual(settings.time_output_count, 101)
         self.assertEqual(settings.interior_grid_count, 201)
-        self.assertEqual(settings.pole_workaround_points_per_side, 2)
         self.assertEqual(settings.bvp_perturbation_amplitude, 10.0)
-        self.assertEqual(settings.bvp_sampling_count, 1001)
-
-    def test_invalid_temperature_derivative_method_is_rejected(self) -> None:
-        with self.assertRaises(ValueError):
-            RunSettings(temperature_derivative_method=4)
 
     def test_invalid_albedo_bounds_are_rejected(self) -> None:
         with self.assertRaises(ValueError):

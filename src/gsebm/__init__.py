@@ -29,6 +29,11 @@ from gsebm.physics import (
     surface_albedo,
     total_diffusivity,
 )
+from gsebm.diagnostics import (
+    CALORIES_PER_SQUARE_CENTIMETER_SECOND_TO_WATTS_PER_SQUARE_METER,
+    meridional_heat_transfer_rate_watts_per_square_meter,
+    pde_meridional_flux,
+)
 from gsebm.initial_conditions import (
     DEFAULT_OBSERVATIONAL_INITIAL_TEMPERATURE,
     DEFAULT_OBSERVATIONAL_INITIAL_TEMPERATURE_X,
@@ -42,6 +47,17 @@ from gsebm.ivp import (
     build_ivp_operator,
     build_ivp_time_grid,
     solve_temperature_ivp,
+)
+from gsebm.bvp import (
+    BVPFields,
+    BVPInitialGuess,
+    BVPProblem,
+    BVPSolution,
+    build_bvp_fields,
+    build_bvp_grid,
+    build_bvp_initial_guess,
+    build_bvp_problem,
+    solve_temperature_bvp,
 )
 
 __all__ = [
@@ -69,6 +85,9 @@ __all__ = [
     "outgoing_longwave_radiation",
     "surface_albedo",
     "total_diffusivity",
+    "CALORIES_PER_SQUARE_CENTIMETER_SECOND_TO_WATTS_PER_SQUARE_METER",
+    "meridional_heat_transfer_rate_watts_per_square_meter",
+    "pde_meridional_flux",
     "DEFAULT_OBSERVATIONAL_INITIAL_TEMPERATURE",
     "DEFAULT_OBSERVATIONAL_INITIAL_TEMPERATURE_X",
     "default_initial_profile_data",
@@ -79,6 +98,15 @@ __all__ = [
     "build_ivp_operator",
     "build_ivp_time_grid",
     "solve_temperature_ivp",
+    "BVPFields",
+    "BVPInitialGuess",
+    "BVPProblem",
+    "BVPSolution",
+    "build_bvp_fields",
+    "build_bvp_grid",
+    "build_bvp_initial_guess",
+    "build_bvp_problem",
+    "solve_temperature_bvp",
 ]
 
 __version__ = "0.1.0"
