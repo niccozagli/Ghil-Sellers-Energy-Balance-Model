@@ -48,7 +48,7 @@ def _(get_data_dir, xr):
     data_dir = get_data_dir()
     warm_cold_dataset = xr.open_dataset(data_dir / "warm_cold_state.nc", engine="scipy")
     edge_dataset = xr.open_dataset(data_dir / "edge_state.nc", engine="scipy")
-    return edge_dataset, warm_cold_dataset
+    return data_dir, edge_dataset, warm_cold_dataset
 
 
 @app.cell(hide_code=True)
@@ -131,6 +131,37 @@ def _(
 def _(edge_dataset, warm_cold_dataset):
     warm_cold_dataset.close()
     edge_dataset.close()
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Bifurcation analysis
+    """)
+    return
+
+
+@app.cell
+def _(data_dir, xr):
+    bif_wc_ds = xr.open_dataset(filename_or_obj=data_dir / "warm_cold_mu_bifurcation.nc")
+    bif_edge_ds = xr.open_dataset(filename_or_obj=data_dir / "edge_mu_bifurcation.nc")
+    global_asymp_temperature_wc = bif_wc_ds.mean(dim="latitude").isel(time=-1)
+    global_asymp_temperature_edge = bif_edge_ds.mean(dim="latitude")
+    return global_asymp_temperature_edge, global_asymp_temperature_wc
+
+
+@app.cell
+def _(global_asymp_temperature_edge, global_asymp_temperature_wc, plt):
+    _fig, _ax = plt.subplots()
+    _ax.scatter(global_asymp_temperature_wc["mu"],global_asymp_temperature_wc["cold_state_temperature"])
+    _ax.scatter(global_asymp_temperature_wc["mu"],global_asymp_temperature_wc["warm_state_temperature"])
+    _ax.scatter(global_asymp_temperature_edge["mu"],global_asymp_temperature_edge["edge_state_temperature"])
+    return
+
+
+@app.cell
+def _():
     return
 
 

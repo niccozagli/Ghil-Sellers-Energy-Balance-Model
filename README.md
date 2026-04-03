@@ -25,6 +25,8 @@ Implemented so far:
 - repository path helpers in `src/gsebm/paths.py`
 - runnable scripts in `scripts/run_warm_cold_state.py` and
   `scripts/run_edge_state.py`
+- `mu` bifurcation sweep scripts in `scripts/run_warm_cold_mu_bifurcation.py`
+  and `scripts/run_edge_mu_bifurcation.py`
 - tests for package import, default parameter values, empirical data, and
   local physics, IVP, and BVP relationships
 
@@ -218,6 +220,8 @@ The current non-prototype entry points are:
 ```bash
 uv run python scripts/run_warm_cold_state.py
 uv run python scripts/run_edge_state.py
+uv run python scripts/run_warm_cold_mu_bifurcation.py
+uv run python scripts/run_edge_mu_bifurcation.py
 ```
 
 The warm/cold script solves the warm-state and cold-state IVP branches and
