@@ -12,6 +12,7 @@ from gsebm.ivp import (
     solve_temperature_ivp,
 )
 from gsebm.parameters import RunSettings
+from gsebm.time import YEAR
 
 
 class IVPTest(unittest.TestCase):
@@ -24,7 +25,7 @@ class IVPTest(unittest.TestCase):
         times = build_ivp_time_grid()
         self.assertEqual(times.shape, (101,))
         self.assertEqual(times[0], 0.0)
-        self.assertEqual(times[-1], 1e9)
+        self.assertEqual(times[-1], 35.0 * YEAR)
 
     def test_default_initial_temperature_uses_uniform_profile(self) -> None:
         x = np.linspace(-0.5, 0.5, 7)

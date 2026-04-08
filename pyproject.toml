@@ -9,7 +9,7 @@ description = "Python port of the Ghil-Sellers Energy Balance Model."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "marimo>=0.11",
+    "marimo>=0.22.4",
     "matplotlib>=3.8",
     "numpy>=1.26",
     "scipy>=1.13",

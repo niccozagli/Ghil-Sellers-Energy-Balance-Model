@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.22.0"
+__generated_with = "0.22.5"
 app = marimo.App(width="medium")
 
 
@@ -148,7 +148,12 @@ def _(data_dir, xr):
     bif_edge_ds = xr.open_dataset(filename_or_obj=data_dir / "edge_mu_bifurcation.nc")
     global_asymp_temperature_wc = bif_wc_ds.mean(dim="latitude").isel(time=-1)
     global_asymp_temperature_edge = bif_edge_ds.mean(dim="latitude")
-    return global_asymp_temperature_edge, global_asymp_temperature_wc
+    return (
+        bif_edge_ds,
+        bif_wc_ds,
+        global_asymp_temperature_edge,
+        global_asymp_temperature_wc,
+    )
 
 
 @app.cell
@@ -157,6 +162,40 @@ def _(global_asymp_temperature_edge, global_asymp_temperature_wc, plt):
     _ax.scatter(global_asymp_temperature_wc["mu"],global_asymp_temperature_wc["cold_state_temperature"])
     _ax.scatter(global_asymp_temperature_wc["mu"],global_asymp_temperature_wc["warm_state_temperature"])
     _ax.scatter(global_asymp_temperature_edge["mu"],global_asymp_temperature_edge["edge_state_temperature"])
+    return
+
+
+@app.cell
+def _(bif_wc_ds):
+    asymp = bif_wc_ds.isel(time=-1)
+    return (asymp,)
+
+
+@app.cell
+def _(asymp, bif_edge_ds, plt):
+    _ds = asymp.where( abs(asymp["mu"] < 1.1) < 1e-3,drop=True)
+
+    _ds = _ds.isel(mu=2)
+    _asymp = asymp.isel(mu=0)
+
+    mu_far = _asymp["mu"].item()
+    mu_close = _ds["mu"].item()
+
+
+    _closest_edge_state= bif_edge_ds.where(abs( bif_edge_ds["mu"]-mu_close ) < 1e-3 ,drop=True).isel(mu=0)
+    _fig, _ax = plt.subplots(nrows=2,sharex=True,sharey=True)
+
+    _ax[0].plot(_ds["latitude"],_asymp["cold_state_temperature"],color="blue")
+    _ax[1].plot(_ds["latitude"],_ds["cold_state_temperature"],color="blue")
+    _ax[1].plot(_closest_edge_state["latitude"],_closest_edge_state["edge_state_temperature"],color="green",linestyle='--')
+
+    _ax[0].set_title("Far from bifurcation")
+    _ax[1].set_title("Close to bifurcation")
+    _ax[1].set_xlim(left=0,right=1)
+
+
+
+    plt.show()
     return
 
 

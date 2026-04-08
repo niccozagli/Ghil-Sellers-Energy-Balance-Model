@@ -4,6 +4,7 @@ import unittest
 
 import gsebm
 from gsebm.parameters import ModelParameters, RunSettings
+from gsebm.time import DAY, YEAR
 
 
 class PackageSmokeTest(unittest.TestCase):
@@ -28,7 +29,7 @@ class PackageSmokeTest(unittest.TestCase):
     def test_default_run_settings_have_expected_values(self) -> None:
         settings = RunSettings()
 
-        self.assertEqual(settings.final_time, 1e9)
+        self.assertEqual(settings.final_time, 35.0 * YEAR)
         self.assertEqual(settings.ivp_initial_temperature, 280.0)
         self.assertEqual(settings.bvp_initial_temperature, 0.0)
         self.assertTrue(settings.remove_negative_k2)
@@ -37,6 +38,11 @@ class PackageSmokeTest(unittest.TestCase):
         self.assertEqual(settings.time_output_count, 101)
         self.assertEqual(settings.interior_grid_count, 201)
         self.assertEqual(settings.bvp_perturbation_amplitude, 10.0)
+
+    def test_physical_time_constants_have_expected_relationships(self) -> None:
+        self.assertEqual(gsebm.SECOND, 1.0)
+        self.assertEqual(gsebm.DAY, DAY)
+        self.assertEqual(gsebm.YEAR, 365.25 * DAY)
 
     def test_invalid_albedo_bounds_are_rejected(self) -> None:
         with self.assertRaises(ValueError):

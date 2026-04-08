@@ -1,5 +1,6 @@
 """Python port of the Ghil-Sellers Energy Balance Model."""
 
+from gsebm.time import DAY, HOUR, MINUTE, SECOND, YEAR
 from gsebm.parameters import (
     ModelParameters,
     RunSettings,
@@ -90,6 +91,11 @@ from gsebm.run import (
 
 __all__ = [
     "__version__",
+    "SECOND",
+    "MINUTE",
+    "HOUR",
+    "DAY",
+    "YEAR",
     "ModelParameters",
     "RunSettings",
     "EmpiricalData",

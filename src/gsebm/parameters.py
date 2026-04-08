@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import exp
 
+from gsebm.time import YEAR
+
 
 @dataclass(frozen=True)
 class ModelParameters:
@@ -31,7 +33,7 @@ class ModelParameters:
 class RunSettings:
     """Default numerical setup for model runs."""
 
-    final_time: float = 1e9  # [s]
+    final_time: float = 35.0 * YEAR  # [s]
     ivp_initial_temperature: float = 280.0  # [K]
     bvp_initial_temperature: float = 0.0  # [K]
     remove_negative_k2: bool = True  # [1]
