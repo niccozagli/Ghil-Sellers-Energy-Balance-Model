@@ -3,7 +3,7 @@
 import unittest
 
 import gsebm
-from gsebm.parameters import ModelParameters, RunSettings
+from gsebm.parameters import ModelParameters, RunSettings, StochasticRunSettings
 from gsebm.time import DAY, YEAR
 
 
@@ -43,6 +43,16 @@ class PackageSmokeTest(unittest.TestCase):
         self.assertEqual(gsebm.SECOND, 1.0)
         self.assertEqual(gsebm.DAY, DAY)
         self.assertEqual(gsebm.YEAR, 365.25 * DAY)
+
+    def test_default_stochastic_run_settings_have_expected_values(self) -> None:
+        settings = StochasticRunSettings()
+
+        self.assertEqual(settings.dt, DAY)
+        self.assertEqual(settings.noise_amplitude, 0.0)
+        self.assertEqual(settings.noise_grid_step_degrees, 5.0)
+        self.assertEqual(settings.noise_length_scale_degrees, 5.0)
+        self.assertIsNone(settings.noise_seed)
+        self.assertEqual(settings.save_every, 1)
 
     def test_invalid_albedo_bounds_are_rejected(self) -> None:
         with self.assertRaises(ValueError):

@@ -10,6 +10,7 @@ wheels/
 .pytest_cache/
 .ruff_cache/
 htmlcov/
+*/__marimo__/* 
 
 # Virtual environments
 .venv

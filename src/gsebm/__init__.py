@@ -4,8 +4,10 @@ from gsebm.time import DAY, HOUR, MINUTE, SECOND, YEAR
 from gsebm.parameters import (
     ModelParameters,
     RunSettings,
+    StochasticRunSettings,
     default_model_parameters,
     default_run_settings,
+    default_stochastic_run_settings,
 )
 from gsebm.empirical import (
     EmpiricalData,
@@ -57,6 +59,13 @@ from gsebm.ivp import (
     build_ivp_time_grid,
     solve_temperature_ivp,
 )
+from gsebm.sde import (
+    SDESolution,
+    SpatialNoiseProcess,
+    build_noise_latitude_grid,
+    build_spatial_noise_process,
+    solve_temperature_sde,
+)
 from gsebm.bvp import (
     BVPFields,
     BVPInitialGuess,
@@ -98,6 +107,7 @@ __all__ = [
     "YEAR",
     "ModelParameters",
     "RunSettings",
+    "StochasticRunSettings",
     "EmpiricalData",
     "EmpiricalInterpolants",
     "HalfEmpiricalData",
@@ -105,6 +115,7 @@ __all__ = [
     "build_empirical_interpolants",
     "default_model_parameters",
     "default_run_settings",
+    "default_stochastic_run_settings",
     "default_empirical_data",
     "latitude_grid_x1",
     "latitude_grid_x2",
@@ -140,6 +151,11 @@ __all__ = [
     "build_ivp_operator",
     "build_ivp_time_grid",
     "solve_temperature_ivp",
+    "SpatialNoiseProcess",
+    "SDESolution",
+    "build_noise_latitude_grid",
+    "build_spatial_noise_process",
+    "solve_temperature_sde",
     "BVPFields",
     "BVPInitialGuess",
     "BVPProblem",

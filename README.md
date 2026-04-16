@@ -20,6 +20,7 @@ Implemented so far:
 - shared local physics formulas in `src/gsebm/physics.py`
 - meridional heat-transfer diagnostics in `src/gsebm/diagnostics.py`
 - a method-of-lines IVP solver in `src/gsebm/ivp.py`
+- a stochastic IMEX temperature solver in `src/gsebm/sde.py`
 - a steady-state BVP solver in `src/gsebm/bvp.py`
 - separate reusable warm/cold and edge-state workflows in `src/gsebm/run.py`
 - repository path helpers in `src/gsebm/paths.py`
@@ -95,6 +96,18 @@ layer. It uses:
 - precomputed latitude-only empirical fields on that grid
 - a divergence-form transport discretization with zero boundary face flux
 - `scipy.integrate.solve_ivp` for time integration
+
+The Python stochastic path reuses the same semi-discrete latitude operator
+but adds additive noise in the temperature tendency. It uses:
+
+- the same fixed IVP latitude grid and empirical preprocessing
+- a split of the semi-discrete tendency into diffusion and radiative
+  reaction parts
+- a fixed-step IMEX update: implicit frozen diffusion, explicit reaction,
+  explicit additive noise
+- a smooth spatial noise field built from Gaussian kernels centered on a
+  coarse latitude grid
+- zero direct stochastic forcing at the two pole nodes
 
 The Python BVP path is assembled separately from the IVP because it needs
 continuous coefficient functions and their latitude derivatives on an
@@ -180,6 +193,32 @@ as the reference code, but it does not reproduce MATLAB `pdepe`
 internals. The time-dependent solver is a custom method-of-lines
 implementation built around SciPy's ODE integrators.
 
+The stochastic solver is separate from the deterministic `solve_ivp`
+integration path. After spatial discretization, it advances
+
+```text
+dT = [diffusion(T) + reaction(T)] dt + sigma xi(x) dW
+```
+
+with an IMEX step of the form
+
+```text
+y* = y_n + dt reaction(y_n) + sigma sqrt(dt) xi_n(x)
+(I - dt L_n) y_{n+1} = y*
+```
+
+where:
+
+- `L_n` is the frozen tridiagonal diffusion operator built from `y_n`
+- `xi_n(x)` is a fresh smooth random latitude field at each timestep
+- `sigma` is the noise amplitude in units `K s^-1/2`
+
+The spatial noise is not white on the solver grid. Instead, the code draws
+independent standard Gaussian coefficients on a coarse latitude grid, maps
+them to the solver grid with Gaussian kernels, and normalizes the interior
+rows to unit pointwise variance. This avoids gridpoint-by-gridpoint rough
+forcing on the full IVP grid.
+
 </details>
 
 ## Layout
@@ -223,6 +262,48 @@ uv run python scripts/run_edge_state.py
 uv run python scripts/run_warm_cold_mu_bifurcation.py
 uv run python scripts/run_edge_mu_bifurcation.py
 ```
+
+The stochastic solver does not yet have a dedicated research script under
+`scripts/`. It is currently intended to be used directly from Python or
+through the prototype notebook in `prototyping/ivp_explorer.py`.
+
+A minimal direct Python example is:
+
+```python
+from gsebm import (
+    RunSettings,
+    StochasticRunSettings,
+    YEAR,
+    DAY,
+    solve_temperature_sde,
+)
+
+run_settings = RunSettings(final_time=35.0 * YEAR)
+stochastic_settings = StochasticRunSettings(
+    dt=1.0 * DAY,
+    noise_amplitude=1.0e-5,
+    noise_grid_step_degrees=5.0,
+    noise_length_scale_degrees=5.0,
+    noise_seed=7,  # or None for a fresh realization each run
+    save_every=30,
+)
+
+solution = solve_temperature_sde(
+    settings=run_settings,
+    stochastic_settings=stochastic_settings,
+    initial_condition_kind="scalar",
+    initial_scalar_value=280.0,
+)
+```
+
+Key stochastic settings:
+
+- `dt`: fixed timestep for the IMEX solver
+- `noise_amplitude`: additive noise amplitude in `K s^-1/2`
+- `noise_grid_step_degrees`: coarse latitude spacing for the sampled noise
+- `noise_length_scale_degrees`: Gaussian kernel width for spatial smoothing
+- `noise_seed`: RNG seed, or `None` for a non-reproducible realization
+- `save_every`: save every `N` timesteps rather than every step
 
 The warm/cold script solves the warm-state and cold-state IVP branches and
 writes a NetCDF file to:

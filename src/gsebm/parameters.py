@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import exp
 
-from gsebm.time import YEAR
+from gsebm.time import DAY, YEAR
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,33 @@ class RunSettings:
             raise ValueError("delta must be positive.")
 
 
+@dataclass(frozen=True)
+class StochasticRunSettings:
+    """Numerical controls for stochastic time integration.
+
+    The additive noise enters the temperature equation through per-step
+    increments of the form ``noise_amplitude * xi(x) * sqrt(dt)``, where
+    ``xi(x)`` has unit pointwise variance on the interior latitude grid.
+    """
+
+    dt: float = DAY  # [s]
+    noise_amplitude: float = 0.0  # [K s^-1/2]
+    noise_grid_step_degrees: float = 5.0  # [deg]
+    noise_length_scale_degrees: float = 5.0  # [deg]
+    noise_seed: int | None = None  # [1]
+    save_every: int = 1  # [step]
+
+    def __post_init__(self) -> None:
+        if self.dt <= 0.0:
+            raise ValueError("dt must be positive.")
+        if self.noise_grid_step_degrees <= 0.0:
+            raise ValueError("noise_grid_step_degrees must be positive.")
+        if self.noise_length_scale_degrees <= 0.0:
+            raise ValueError("noise_length_scale_degrees must be positive.")
+        if self.save_every < 1:
+            raise ValueError("save_every must be at least 1.")
+
+
 def default_model_parameters() -> ModelParameters:
     """Return the default physical parameter set."""
 
@@ -62,3 +89,9 @@ def default_run_settings() -> RunSettings:
     """Return the default numerical settings."""
 
     return RunSettings()
+
+
+def default_stochastic_run_settings() -> StochasticRunSettings:
+    """Return the default stochastic integration settings."""
+
+    return StochasticRunSettings()
