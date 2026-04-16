@@ -97,18 +97,6 @@ layer. It uses:
 - a divergence-form transport discretization with zero boundary face flux
 - `scipy.integrate.solve_ivp` for time integration
 
-The Python stochastic path reuses the same semi-discrete latitude operator
-but adds additive noise in the temperature tendency. It uses:
-
-- the same fixed IVP latitude grid and empirical preprocessing
-- a split of the semi-discrete tendency into diffusion and radiative
-  reaction parts
-- a fixed-step IMEX update: implicit frozen diffusion, explicit reaction,
-  explicit additive noise
-- a smooth spatial noise field built from Gaussian kernels centered on a
-  coarse latitude grid
-- zero direct stochastic forcing at the two pole nodes
-
 The Python BVP path is assembled separately from the IVP because it needs
 continuous coefficient functions and their latitude derivatives on an
 adaptive mesh. It uses:
@@ -192,6 +180,24 @@ The current IVP implementation follows the same continuous model structure
 as the reference code, but it does not reproduce MATLAB `pdepe`
 internals. The time-dependent solver is a custom method-of-lines
 implementation built around SciPy's ODE integrators.
+
+</details>
+
+<details>
+<summary>Stochastic Solver</summary>
+
+The Python stochastic path reuses the same semi-discrete latitude operator
+as the deterministic IVP, but adds additive noise in the temperature
+tendency. It uses:
+
+- the same fixed IVP latitude grid and empirical preprocessing
+- a split of the semi-discrete tendency into diffusion and radiative
+  reaction parts
+- a fixed-step IMEX update: implicit frozen diffusion, explicit reaction,
+  explicit additive noise
+- a smooth spatial noise field built from Gaussian kernels centered on a
+  coarse latitude grid
+- zero direct stochastic forcing at the two pole nodes
 
 The stochastic solver is separate from the deterministic `solve_ivp`
 integration path. After spatial discretization, it advances
