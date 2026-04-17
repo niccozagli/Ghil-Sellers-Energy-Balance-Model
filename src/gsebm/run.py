@@ -10,8 +10,16 @@ import numpy as np
 
 from gsebm.bvp import BVPSolution, solve_temperature_bvp
 from gsebm.ivp import IVPSolution, solve_temperature_ivp
-from gsebm.parameters import ModelParameters, RunSettings, default_model_parameters, default_run_settings
+from gsebm.parameters import (
+    ModelParameters,
+    RunSettings,
+    StochasticRunSettings,
+    default_model_parameters,
+    default_run_settings,
+    default_stochastic_run_settings,
+)
 from gsebm.paths import get_data_dir
+from gsebm.sde import SDESolution, solve_temperature_sde
 
 
 @dataclass(frozen=True)
@@ -52,6 +60,16 @@ class EdgeMuBifurcationSolutions:
     settings: RunSettings
     mu_values: tuple[float, ...]
     edge_states: tuple[BVPSolution, ...]
+
+
+@dataclass(frozen=True)
+class StochasticStateSolution:
+    """Stochastic temperature trajectory for one configuration."""
+
+    params: ModelParameters
+    settings: RunSettings
+    stochastic_settings: StochasticRunSettings
+    state: SDESolution
 
 
 def _flatten_prefixed_attributes(prefix: str, values: dict[str, object]) -> dict[str, object]:
@@ -214,6 +232,34 @@ def run_edge_state(
     )
 
 
+def run_stochastic_state(
+    *,
+    params: ModelParameters | None = None,
+    settings: RunSettings | None = None,
+    stochastic_settings: StochasticRunSettings | None = None,
+    initial_temperature: float = 280.0,
+) -> StochasticStateSolution:
+    """Solve one stochastic temperature trajectory from a scalar initial state."""
+
+    model_parameters = params or default_model_parameters()
+    run_settings = settings or default_run_settings()
+    stochastic_run_settings = stochastic_settings or default_stochastic_run_settings()
+
+    state = solve_temperature_sde(
+        params=model_parameters,
+        settings=run_settings,
+        stochastic_settings=stochastic_run_settings,
+        initial_condition_kind="scalar",
+        initial_scalar_value=initial_temperature,
+    )
+    return StochasticStateSolution(
+        params=model_parameters,
+        settings=run_settings,
+        stochastic_settings=stochastic_run_settings,
+        state=state,
+    )
+
+
 def warm_cold_state_dataset(
     solutions: WarmColdStateSolutions,
     *,
@@ -362,6 +408,72 @@ def save_edge_state_dataset(
         edge_initial_temperature=edge_initial_temperature,
         bvp_tolerance=bvp_tolerance,
         bvp_max_nodes=bvp_max_nodes,
+    )
+    dataset.to_netcdf(output_path, engine="scipy")
+    return output_path
+
+
+def stochastic_state_dataset(
+    solution: StochasticStateSolution,
+    *,
+    initial_temperature: float,
+) -> xr.Dataset:
+    """Return one stochastic temperature trajectory as an ``xarray.Dataset``."""
+
+    state = solution.state
+
+    attrs: dict[str, object] = {
+        "title": "Stochastic temperature trajectory",
+        "latitude_name": "normalized latitude",
+        "latitude_bounds": "[-1, 1]",
+        "initial_temperature": float(initial_temperature),
+    }
+    stochastic_attrs = asdict(solution.stochastic_settings)
+    if stochastic_attrs["noise_seed"] is None:
+        stochastic_attrs["noise_seed"] = "None"
+    attrs.update(_flatten_prefixed_attributes("param", asdict(solution.params)))
+    attrs.update(_flatten_prefixed_attributes("setting", asdict(solution.settings)))
+    attrs.update(_flatten_prefixed_attributes("stochastic", stochastic_attrs))
+
+    return xr.Dataset(
+        data_vars={
+            "temperature": (
+                ("time", "latitude"),
+                state.temperature,
+                {"units": "K", "long_name": "stochastic temperature"},
+            ),
+        },
+        coords={
+            "time": (
+                "time",
+                state.t,
+                {"units": "s", "long_name": "time"},
+            ),
+            "latitude": (
+                "latitude",
+                state.x,
+                {"units": "1", "long_name": "normalized latitude"},
+            ),
+        },
+        attrs=attrs,
+    )
+
+
+def save_stochastic_state_dataset(
+    solution: StochasticStateSolution,
+    *,
+    filename: str = "stochastic_state.nc",
+    initial_temperature: float,
+    output_dir: str | Path | None = None,
+) -> Path:
+    """Write the stochastic trajectory dataset to ``data/<filename>``."""
+
+    destination_dir = get_data_dir() if output_dir is None else Path(output_dir)
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    output_path = destination_dir / filename
+    dataset = stochastic_state_dataset(
+        solution,
+        initial_temperature=initial_temperature,
     )
     dataset.to_netcdf(output_path, engine="scipy")
     return output_path

@@ -3,27 +3,48 @@
 import tempfile
 import unittest
 
+from dataclasses import replace
+
 import numpy as np
 import xarray as xr
 
-from gsebm.parameters import RunSettings
+from gsebm.parameters import RunSettings, StochasticRunSettings, default_model_parameters
 from gsebm.run import (
     edge_mu_bifurcation_dataset,
     edge_state_dataset,
     run_edge_mu_bifurcation,
     run_edge_state,
+    run_stochastic_state,
     run_warm_cold_mu_bifurcation,
     run_warm_cold_state,
     save_edge_mu_bifurcation_dataset,
     save_edge_state_dataset,
+    save_stochastic_state_dataset,
     save_warm_cold_mu_bifurcation_dataset,
     save_warm_cold_state_dataset,
+    stochastic_state_dataset,
     warm_cold_mu_bifurcation_dataset,
     warm_cold_state_dataset,
 )
 
 
 class RunWorkflowTest(unittest.TestCase):
+    def test_run_stochastic_state_returns_trajectory(self) -> None:
+        params = replace(default_model_parameters(), mu=1.05)
+        settings = RunSettings(final_time=1e3, time_output_count=5)
+        stochastic_settings = StochasticRunSettings(dt=1e3, noise_amplitude=0.0)
+        solution = run_stochastic_state(
+            params=params,
+            settings=settings,
+            stochastic_settings=stochastic_settings,
+            initial_temperature=280.0,
+        )
+
+        self.assertEqual(solution.params.mu, 1.05)
+        self.assertEqual(solution.state.t.shape, (2,))
+        self.assertEqual(solution.state.temperature.shape, (2, solution.state.x.size))
+        self.assertTrue(np.isfinite(solution.state.temperature).all())
+
     def test_run_warm_cold_state_returns_two_ivp_branches(self) -> None:
         settings = RunSettings(final_time=1e3, time_output_count=5)
         solutions = run_warm_cold_state(
@@ -70,6 +91,26 @@ class RunWorkflowTest(unittest.TestCase):
         self.assertIn("setting_final_time", dataset.attrs)
         self.assertEqual(float(dataset.attrs["warm_initial_temperature"]), 300.0)
 
+    def test_stochastic_state_dataset_has_expected_dimensions(self) -> None:
+        params = replace(default_model_parameters(), mu=1.05)
+        settings = RunSettings(final_time=1e3, time_output_count=5)
+        stochastic_settings = StochasticRunSettings(dt=1e3, noise_amplitude=0.0)
+        solution = run_stochastic_state(
+            params=params,
+            settings=settings,
+            stochastic_settings=stochastic_settings,
+            initial_temperature=280.0,
+        )
+        dataset = stochastic_state_dataset(
+            solution,
+            initial_temperature=280.0,
+        )
+
+        self.assertEqual(dataset["temperature"].dims, ("time", "latitude"))
+        self.assertIn("param_mu", dataset.attrs)
+        self.assertIn("stochastic_dt", dataset.attrs)
+        self.assertEqual(float(dataset.attrs["initial_temperature"]), 280.0)
+
     def test_save_warm_cold_state_dataset_writes_netcdf(self) -> None:
         settings = RunSettings(final_time=1e3, time_output_count=5)
         solutions = run_warm_cold_state(
@@ -93,6 +134,31 @@ class RunWorkflowTest(unittest.TestCase):
             try:
                 self.assertIn("warm_state_temperature", dataset.data_vars)
                 self.assertIn("cold_state_temperature", dataset.data_vars)
+            finally:
+                dataset.close()
+
+    def test_save_stochastic_state_dataset_writes_netcdf(self) -> None:
+        params = replace(default_model_parameters(), mu=1.05)
+        settings = RunSettings(final_time=1e3, time_output_count=5)
+        stochastic_settings = StochasticRunSettings(dt=1e3, noise_amplitude=0.0)
+        solution = run_stochastic_state(
+            params=params,
+            settings=settings,
+            stochastic_settings=stochastic_settings,
+            initial_temperature=280.0,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = save_stochastic_state_dataset(
+                solution,
+                filename="stochastic_state.nc",
+                initial_temperature=280.0,
+                output_dir=temp_dir,
+            )
+            self.assertTrue(path.exists())
+            dataset = xr.open_dataset(path, engine="scipy")
+            try:
+                self.assertIn("temperature", dataset.data_vars)
             finally:
                 dataset.close()
 

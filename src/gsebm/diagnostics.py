@@ -121,6 +121,33 @@ def meridional_heat_transfer_rate_watts_per_square_meter(
     return -flux * (np.pi / 2.0) * CALORIES_PER_SQUARE_CENTIMETER_SECOND_TO_WATTS_PER_SQUARE_METER
 
 
+def latitude_weighted_mean(
+    data: xr.DataArray | xr.Dataset,
+    *,
+    x: xr.DataArray | None = None,
+    dim: str = "latitude",
+    xmin: float = -1.0,
+    xmax: float = 1.0,
+) -> xr.DataArray | xr.Dataset:
+    """Return the latitude-weighted mean over ``xmin <= x <= xmax``.
+
+    The weights are ``cos(pi x / 2)``, consistent with the model's
+    normalized latitude coordinate.
+    """
+
+    coordinate = data[dim] if x is None else x
+    if dim not in coordinate.dims:
+        raise ValueError(f"x coordinate must depend on the '{dim}' dimension.")
+    if xmin > xmax:
+        raise ValueError("xmin must be less than or equal to xmax.")
+
+    region_mask = (coordinate >= xmin) & (coordinate <= xmax)
+    regional_data = data.where(region_mask, drop=True)
+    regional_coordinate = coordinate.where(region_mask, drop=True)
+    weights = xr.apply_ufunc(latitude_weight, regional_coordinate)
+    return regional_data.weighted(weights).mean(dim=dim)
+
+
 def warm_cold_state_albedo_from_dataset(dataset: xr.Dataset) -> xr.Dataset:
     """Return warm/cold albedo fields derived from a saved IVP dataset."""
 
