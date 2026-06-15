@@ -17,5 +17,7 @@ htmlcov/
 
 # Generated data
 data/*.nc
+data/*/*.nc
+figures/*
 # Mac files
 .DS_Store

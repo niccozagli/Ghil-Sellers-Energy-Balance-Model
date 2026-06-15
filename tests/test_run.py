@@ -1,12 +1,16 @@
 """Tests for high-level model workflows."""
 
+import importlib.util
 import tempfile
 import unittest
 
 from dataclasses import replace
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import xarray as xr
+from typer.testing import CliRunner
 
 from gsebm.parameters import RunSettings, StochasticRunSettings, default_model_parameters
 from gsebm.run import (
@@ -69,6 +73,66 @@ class RunWorkflowTest(unittest.TestCase):
 
         self.assertEqual(solution.edge_state.temperature.shape, solution.edge_state.x.shape)
         self.assertTrue(np.isfinite(solution.edge_state.temperature).all())
+
+    def test_run_warm_cold_state_script_passes_mu_and_filename(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "run_warm_cold_state.py"
+        spec = importlib.util.spec_from_file_location("run_warm_cold_state_script", script_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        runner = CliRunner()
+        with (
+            patch.object(module, "run_warm_cold_state", return_value="solutions") as run_mock,
+            patch.object(module, "save_warm_cold_state_dataset", return_value=Path("/tmp/custom_output.nc")) as save_mock,
+        ):
+            result = runner.invoke(
+                module.app,
+                [
+                    "--filename",
+                    "custom_output.nc",
+                    "--mu",
+                    "1.05",
+                    "--final-time",
+                    "1000",
+                    "--time-output-count",
+                    "5",
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(run_mock.call_args.kwargs["params"].mu, 1.05)
+        self.assertEqual(run_mock.call_args.kwargs["settings"].final_time, 1000.0 * module.YEAR)
+        self.assertEqual(save_mock.call_args.kwargs["filename"], "custom_output.nc")
+
+    def test_run_edge_state_script_passes_mu_and_filename_without_final_time_cli(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "run_edge_state.py"
+        spec = importlib.util.spec_from_file_location("run_edge_state_script", script_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        runner = CliRunner()
+        with (
+            patch.object(module, "run_edge_state", return_value="solution") as run_mock,
+            patch.object(module, "save_edge_state_dataset", return_value=Path("/tmp/custom_edge.nc")) as save_mock,
+        ):
+            result = runner.invoke(
+                module.app,
+                [
+                    "--filename",
+                    "custom_edge.nc",
+                    "--mu",
+                    "1.05",
+                ],
+            )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(run_mock.call_args.kwargs["params"].mu, 1.05)
+        self.assertEqual(run_mock.call_args.kwargs["settings"], RunSettings())
+        self.assertEqual(save_mock.call_args.kwargs["filename"], "custom_edge.nc")
 
     def test_warm_cold_state_dataset_has_expected_dimensions(self) -> None:
         settings = RunSettings(final_time=1e3, time_output_count=5)

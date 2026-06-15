@@ -121,6 +121,38 @@ def meridional_heat_transfer_rate_watts_per_square_meter(
     return -flux * (np.pi / 2.0) * CALORIES_PER_SQUARE_CENTIMETER_SECOND_TO_WATTS_PER_SQUARE_METER
 
 
+def _clipped_cell_widths(
+    coordinate: xr.DataArray,
+    *,
+    xmin: float,
+    xmax: float,
+) -> xr.DataArray:
+    """Return cell widths clipped to the integration interval."""
+
+    if coordinate.ndim != 1:
+        raise ValueError("x coordinate must be one-dimensional.")
+
+    values = _as_float_array(coordinate.values)
+    if values.size == 0:
+        raise ValueError("x coordinate must be non-empty.")
+    if np.any(np.diff(values) <= 0.0):
+        raise ValueError("x coordinate must be strictly increasing.")
+
+    edges = np.empty(values.size + 1, dtype=float)
+    if values.size == 1:
+        edges[0] = xmin
+        edges[1] = xmax
+    else:
+        edges[1:-1] = 0.5 * (values[:-1] + values[1:])
+        edges[0] = values[0] - 0.5 * (values[1] - values[0])
+        edges[-1] = values[-1] + 0.5 * (values[-1] - values[-2])
+
+    clipped_left = np.maximum(edges[:-1], xmin)
+    clipped_right = np.minimum(edges[1:], xmax)
+    widths = np.maximum(clipped_right - clipped_left, 0.0)
+    return xr.DataArray(widths, coords=coordinate.coords, dims=coordinate.dims)
+
+
 def latitude_weighted_mean(
     data: xr.DataArray | xr.Dataset,
     *,
@@ -132,7 +164,8 @@ def latitude_weighted_mean(
     """Return the latitude-weighted mean over ``xmin <= x <= xmax``.
 
     The weights are ``cos(pi x / 2)``, consistent with the model's
-    normalized latitude coordinate.
+    normalized latitude coordinate, multiplied by clipped cell widths so
+    the result matches the discrete quadrature form of the regional mean.
     """
 
     coordinate = data[dim] if x is None else x
@@ -141,11 +174,12 @@ def latitude_weighted_mean(
     if xmin > xmax:
         raise ValueError("xmin must be less than or equal to xmax.")
 
-    region_mask = (coordinate >= xmin) & (coordinate <= xmax)
-    regional_data = data.where(region_mask, drop=True)
-    regional_coordinate = coordinate.where(region_mask, drop=True)
-    weights = xr.apply_ufunc(latitude_weight, regional_coordinate)
-    return regional_data.weighted(weights).mean(dim=dim)
+    weights = xr.apply_ufunc(latitude_weight, coordinate) * _clipped_cell_widths(
+        coordinate,
+        xmin=xmin,
+        xmax=xmax,
+    )
+    return data.weighted(weights).mean(dim=dim)
 
 
 def warm_cold_state_albedo_from_dataset(dataset: xr.Dataset) -> xr.Dataset:

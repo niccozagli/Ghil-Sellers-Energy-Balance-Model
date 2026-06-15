@@ -12,7 +12,7 @@ from gsebm.time import DAY, YEAR
 class ModelParameters:
     """Physical parameters for the Ghil-Sellers energy balance model."""
 
-    mu: float = 1.0  # [1]
+    mu: float = 1  # [1]
     albedo_min: float = 0.25  # [1]
     albedo_max: float = 0.6  # [1]
     c1: float = 0.009  # [K^-1]

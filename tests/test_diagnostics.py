@@ -12,6 +12,7 @@ from gsebm.diagnostics import (
     build_ivp_operator_from_dataset,
     edge_state_albedo_from_dataset,
     edge_state_heat_transfer_from_dataset,
+    latitude_weighted_mean,
     meridional_heat_transfer_rate_watts_per_square_meter,
     model_parameters_from_dataset_attrs,
     pde_meridional_flux,
@@ -30,6 +31,36 @@ from gsebm.run import (
 
 
 class DiagnosticsTest(unittest.TestCase):
+    def test_latitude_weighted_mean_uses_clipped_cell_width_quadrature(self) -> None:
+        x = xr.DataArray(
+            np.array([0.0, 0.2, 0.75, 1.0]),
+            dims=("latitude",),
+            coords={"latitude": np.array([0.0, 0.2, 0.75, 1.0])},
+        )
+        temperature = xr.DataArray(
+            np.array([10.0, 20.0, 40.0, 80.0]),
+            dims=("latitude",),
+            coords={"latitude": x},
+            name="temperature",
+        )
+
+        result = latitude_weighted_mean(
+            temperature,
+            x=x,
+            xmin=0.15,
+            xmax=0.85,
+        )
+
+        edges = np.array([-0.1, 0.1, 0.475, 0.875, 1.125])
+        widths = np.maximum(
+            np.minimum(edges[1:], 0.85) - np.maximum(edges[:-1], 0.15),
+            0.0,
+        )
+        quadrature_weights = np.cos(0.5 * np.pi * x.values) * widths
+        expected = np.sum(quadrature_weights * temperature.values) / np.sum(quadrature_weights)
+
+        self.assertAlmostEqual(float(result), expected)
+
     def test_pde_meridional_flux_matches_ivp_flux_definition(self) -> None:
         params = default_model_parameters()
         latitude = np.array([0.0, 0.5])

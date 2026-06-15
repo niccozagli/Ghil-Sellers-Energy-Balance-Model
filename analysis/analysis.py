@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.1"
+__generated_with = "0.23.6"
 app = marimo.App(width="medium")
 
 
@@ -16,6 +16,7 @@ def _():
         edge_state_albedo_from_dataset,
         edge_state_heat_transfer_from_dataset,
         get_data_dir,
+        get_repo_root,
         latitude_weighted_mean,
         meridional_heat_transfer_rate_watts_per_square_meter,
         plot_asymptotic_state_diagnostics,
@@ -27,6 +28,7 @@ def _():
     from gsebm.time import DAY, YEAR
 
     return (
+        DAY,
         YEAR,
         build_ivp_operator_from_dataset,
         edge_state_albedo_from_dataset,
@@ -59,8 +61,8 @@ def _(mo):
 @app.cell
 def _(get_data_dir, xr):
     data_dir = get_data_dir()
-    warm_cold_dataset = xr.open_dataset(data_dir / "warm_cold_state.nc", engine="scipy")
-    edge_dataset = xr.open_dataset(data_dir / "edge_state.nc", engine="scipy")
+    warm_cold_dataset = xr.open_dataset(data_dir / "warm_cold_state_mu0p9655.nc", engine="scipy")
+    edge_dataset = xr.open_dataset(data_dir / "edge_state_mu0p9655.nc", engine="scipy")
     return data_dir, edge_dataset, warm_cold_dataset
 
 
@@ -73,22 +75,22 @@ def _(mo):
 
 
 @app.cell
-def _(latitude_weighted_mean, plt, warm_cold_dataset):
+def _(YEAR, latitude_weighted_mean, plt, warm_cold_dataset):
     global_temperature = latitude_weighted_mean(warm_cold_dataset)
     mean_temperature_fig, mean_temperature_ax = plt.subplots(figsize=(8, 4))
     mean_temperature_ax.plot(
-        global_temperature["time"],
+        global_temperature["time"] / YEAR,
         global_temperature["warm_state_temperature"],
         color="red",
         label="Warm State",
     )
     mean_temperature_ax.plot(
-        global_temperature["time"],
+        global_temperature["time"] / YEAR,
         global_temperature["cold_state_temperature"],
         color="blue",
         label="Cold State",
     )
-    mean_temperature_ax.set_xlabel("Time [s]")
+    mean_temperature_ax.set_xlabel("Time [year]")
     mean_temperature_ax.set_ylabel("Mean temperature [K]")
     mean_temperature_ax.grid(True, alpha=0.3)
     mean_temperature_ax.legend()
@@ -136,8 +138,9 @@ def _(
         cold_heat_transfer=asymptotic_heat_transfer["cold_state_heat_transfer"],
         edge_heat_transfer=edge_heat_transfer,
     ) 
+    # asymptotic_fig.savefig(get_repo_root() / "figures"/ "deterministic_profiles.png",dpi=300)
     asymptotic_fig
-    return
+    return (edge_albedo,)
 
 
 @app.cell
@@ -161,7 +164,12 @@ def _(data_dir, latitude_weighted_mean, xr):
     bif_edge_ds = xr.open_dataset(filename_or_obj=data_dir / "edge_mu_bifurcation.nc")
     global_asymp_temperature_wc = latitude_weighted_mean(bif_wc_ds).isel(time=-1)
     global_asymp_temperature_edge = latitude_weighted_mean(bif_edge_ds)
-    return global_asymp_temperature_edge, global_asymp_temperature_wc
+    return (
+        bif_edge_ds,
+        bif_wc_ds,
+        global_asymp_temperature_edge,
+        global_asymp_temperature_wc,
+    )
 
 
 @app.cell
@@ -170,6 +178,16 @@ def _(global_asymp_temperature_edge, global_asymp_temperature_wc, plt):
     _ax.scatter(global_asymp_temperature_wc["mu"],global_asymp_temperature_wc["cold_state_temperature"])
     _ax.scatter(global_asymp_temperature_wc["mu"],global_asymp_temperature_wc["warm_state_temperature"])
     _ax.scatter(global_asymp_temperature_edge["mu"],global_asymp_temperature_edge["edge_state_temperature"])
+    _ax.grid(alpha=0.4,linestyle='--')
+    plt.show()
+
+    return
+
+
+@app.cell
+def _(bif_edge_ds, bif_wc_ds):
+    bif_wc_ds.close()
+    bif_edge_ds.close()
     return
 
 
@@ -183,18 +201,19 @@ def _(mo):
 
 @app.cell
 def _(data_dir, xr):
-    warm_ds = xr.open_dataset(data_dir / "stochastic_warm_state.nc")
-    return (warm_ds,)
+    warm_input_filename = "stochastic_warm_state_mu0p97_{5}.nc"
+    warm_ds = xr.open_dataset(data_dir / warm_input_filename)
+    edge_state_ds = xr.open_dataset(data_dir / "edge_state_mu0p9655.nc", engine="scipy")
+    return edge_state_ds, warm_ds, warm_input_filename
 
 
 @app.cell
-def _(YEAR, latitude_weighted_mean, warm_ds):
-    transient = 100* YEAR
+def _(latitude_weighted_mean, warm_ds):
     avg_T = latitude_weighted_mean(warm_ds, xmin=0, xmax=1)
     eq_T = latitude_weighted_mean(warm_ds, xmin=0, xmax=1/3)
     pole_T = latitude_weighted_mean(warm_ds, xmin=1/3, xmax=1)
     Delta_T = eq_T - pole_T
-    return Delta_T, avg_T, transient
+    return Delta_T, avg_T
 
 
 @app.cell
@@ -204,21 +223,34 @@ def _(YEAR, avg_T, plt):
     _ax.set_xlabel(xlabel=r"$t$ (years)",size=16)
     _ax.set_ylabel(ylabel=r"$\overline{T} $ (K) ",size=16)
     _ax.grid(alpha=0.4,linestyle='--')
-    _ax.set_xlim(left=-5,right=500)
+    # _ax.set_xlim(left=200,right=2400)
+    # _ax.set_ylim(bottom=268,top=285)
+    # _fig.savefig(get_repo_root() / "figures" /"warm_stochastic_trajectory_mu0p97.png",dpi=400)
     plt.show()
     return
 
 
 @app.cell
-def _(transient, warm_ds):
+def _(YEAR, warm_ds):
+    transient = 500
+    stop = 1e10
+
+    condition = (
+        ( warm_ds["time"] > transient * YEAR) &
+        (warm_ds["time"] < stop * YEAR)
+
+    )
     asymptotic_warm_ds = warm_ds.where(
-        warm_ds["time"] > transient,
+        cond=condition,
         drop=True,
     )
     warm_asymptotic_temperature = asymptotic_warm_ds["temperature"].mean(dim="time")
     warm_asymptotic_temperature_std = asymptotic_warm_ds["temperature"].std(dim="time")
     return (
         asymptotic_warm_ds,
+        condition,
+        stop,
+        transient,
         warm_asymptotic_temperature,
         warm_asymptotic_temperature_std,
     )
@@ -277,8 +309,10 @@ def _(
     warm_heat_flux_profile = warm_heat_flux.mean(dim="time")
     warm_heat_flux_profile_std = warm_heat_flux.std(dim="time")
     return (
+        warm_albedo,
         warm_albedo_profile,
         warm_albedo_profile_std,
+        warm_heat_flux,
         warm_heat_flux_profile,
         warm_heat_flux_profile_std,
     )
@@ -323,7 +357,6 @@ def _(
         _latitude,
         _temperature_mean,
         color="red",
-        label="Warm Stochastic Run",
     )
     _temperature_ax.fill_between(
         _latitude,
@@ -333,17 +366,12 @@ def _(
         alpha=0.15,
     )
     _temperature_ax.set_ylabel("Temperature [K]")
-    _temperature_ax.set_title(
-        f"Mean temperature profile for t > {_transient_years:.0f} years"
-    )
-    _temperature_ax.legend()
     _temperature_ax.grid(True, alpha=0.3)
 
     _albedo_ax.plot(
         _latitude,
         _albedo_mean,
         color="red",
-        label="Warm Stochastic Run",
     )
     _albedo_ax.fill_between(
         _latitude,
@@ -352,18 +380,13 @@ def _(
         color="red",
         alpha=0.15,
     )
-    _albedo_ax.set_ylabel("Albedo [-]")
-    _albedo_ax.set_title(
-        f"Mean albedo profile for t > {_transient_years:.0f} years"
-    )
-    _albedo_ax.legend()
+    _albedo_ax.set_ylabel("Albedo")
     _albedo_ax.grid(True, alpha=0.3)
 
     _flux_ax.plot(
         _latitude,
         _flux_mean,
         color="red",
-        label="Warm Stochastic Run",
     )
     _flux_ax.fill_between(
         _latitude,
@@ -372,29 +395,35 @@ def _(
         color="red",
         alpha=0.15,
     )
-    _flux_ax.set_xlabel("Normalized latitude x [-]")
+    _flux_ax.set_xlabel("Normalized latitude x")
     _flux_ax.set_ylabel(r"Heat flux $j$ [W m$^{-2}$]")
-    _flux_ax.set_title(
-        f"Mean meridional heat-transfer rate for t > {_transient_years:.0f} years"
-    )
-    _flux_ax.legend()
+
     _flux_ax.grid(True, alpha=0.3)
     _flux_ax.set_xlim(left=0, right=1)
     _flux_ax.set_ylim(bottom=0)
     _profile_fig.tight_layout()
+    # _profile_fig.savefig(get_repo_root() / "figures" / "stochastic_avg_profiles_near.png", dpi=400)
     plt.show()
     return
 
 
 @app.cell
-def _(Delta_T, avg_T, np, plt, transient):
+def _(
+    Delta_T,
+    avg_T,
+    condition,
+    edge_state_ds,
+    latitude_weighted_mean,
+    np,
+    plt,
+):
     from matplotlib.colors import LogNorm
     from scipy.stats import gaussian_kde
 
     _fig, _ax = plt.subplots(figsize=(8, 6))
 
-    asymptotic_Delta_T = Delta_T.where(Delta_T["time"] > transient, drop=True)
-    asymptotic_avg_T = avg_T.where(avg_T["time"] > transient, drop=True)
+    asymptotic_Delta_T = Delta_T.where(cond=condition, drop=True)
+    asymptotic_avg_T = avg_T.where(cond=condition, drop=True)
 
     _x = asymptotic_avg_T["temperature"].values.ravel()
     _y = asymptotic_Delta_T["temperature"].values.ravel()
@@ -441,9 +470,114 @@ def _(Delta_T, avg_T, np, plt, transient):
     _colorbar.set_ticklabels([f"{_level:.0e}" for _level in _levels])
     _ax.set_xlabel(r"$\overline{T} [K]$",size=16)
     _ax.set_ylabel(r"$\Delta T [K]$",size=16)
+
+
+
+    edge_avg_T = latitude_weighted_mean(edge_state_ds, xmin=0, xmax=1)
+    edge_eq_T = latitude_weighted_mean(edge_state_ds, xmin=0, xmax=1/3)
+    edge_pole_T = latitude_weighted_mean(edge_state_ds, xmin=1/3, xmax=1)
+    edge_Delta_T = edge_eq_T - edge_pole_T
+
+    _ax.scatter(x=edge_avg_T["edge_state_temperature"].item(), 
+                y=edge_Delta_T["edge_state_temperature"].item(),
+                marker="^",
+                s=45,
+                color="green"
+    )
     # _ax.set_xlim(xmin=290,right=305)
     # _ax.set_ylim(bottom=5,top=11)
+    # _fig.savefig(get_repo_root() / "figures"/ "statistics_warm_near.png", dpi=400)
     plt.show()
+    return asymptotic_Delta_T, asymptotic_avg_T, edge_Delta_T, edge_avg_T
+
+
+@app.cell
+def _(asymptotic_Delta_T, asymptotic_avg_T, edge_Delta_T, edge_avg_T, np, plt):
+
+    _fig, _ax = plt.subplots(figsize=(8, 6))
+
+
+    _x = asymptotic_avg_T["temperature"].values.ravel()
+    _y = asymptotic_Delta_T["temperature"].values.ravel()
+    _mask = np.isfinite(_x) & np.isfinite(_y)
+    _x = _x[_mask]
+    _y = _y[_mask]
+
+    _ax.scatter(x=_x,y=_y,marker='.',s=25,color="blue")
+
+    _ax.scatter(x=edge_avg_T["edge_state_temperature"].item(), 
+                y=edge_Delta_T["edge_state_temperature"].item(),
+                marker="^",
+                s=50,
+                color="red"
+    )
+    # _ax.set_xlim(xmin=290,right=305)
+    # _ax.set_ylim(bottom=5,top=11)
+    # _fig.savefig(get_repo_root() / "figures"/ "statistics_warm_near.png", dpi=400)
+    plt.show()
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Saving the data
+    """)
+    return
+
+
+@app.cell
+def _(
+    DAY,
+    asymptotic_Delta_T,
+    asymptotic_avg_T,
+    asymptotic_warm_ds,
+    data_dir,
+    edge_albedo,
+    edge_dataset,
+    stop,
+    transient,
+    warm_albedo,
+    warm_ds,
+    warm_heat_flux,
+    warm_input_filename,
+    xr,
+):
+    dt = (asymptotic_warm_ds["time"].values[1] - asymptotic_warm_ds["time"].values[0] ) / DAY
+    export_attrs = dict(warm_ds.attrs)
+    export_attrs.update(
+        {
+            "title": "Derived asymptotic stochastic diagnostics",
+            "source_dataset_filename": warm_input_filename,
+            "source_dataset_path": str(data_dir / warm_input_filename),
+            "output_dataset_filename": warm_input_filename,
+            "output_dataset_path": str(data_dir / warm_input_filename),
+            "analysis_transient_years": float(transient),
+            "analysis_stop_years": float(stop),
+            "tau [days]": dt,
+            "latitude slicing" : "Northern Emisphere"
+        }
+    )
+    export_dataset = xr.Dataset(
+        data_vars={
+            "edge_state_temperature" : edge_dataset.where(edge_dataset["latitude"] > 0,drop=True)["edge_state_temperature"],
+            "edge_state_albedo" : edge_albedo.where(edge_albedo["latitude"]>0,drop=True),
+            "asymptotic_temperature": asymptotic_warm_ds.where(asymptotic_warm_ds["latitude"]>0,drop=True)["temperature"],
+            "warm_albedo": warm_albedo.where(warm_albedo["latitude"]>0,drop=True),
+            "warm_heat_flux": warm_heat_flux.where(warm_heat_flux["latitude"] > 0,drop=True),
+            "asymptotic_Delta_T": asymptotic_Delta_T["temperature"],
+            "asymptotic_avg_T": asymptotic_avg_T["temperature"],
+        },
+        attrs=export_attrs,
+    )
+
+    output_path = data_dir / "koopman_data" / warm_input_filename
+    export_dataset.to_netcdf(output_path, engine="scipy")
+    return
+
+
+@app.cell
+def _():
     return
 
 
