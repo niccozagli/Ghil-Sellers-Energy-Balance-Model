@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.6"
+__generated_with = "0.23.9"
 app = marimo.App(width="medium")
 
 
@@ -61,8 +61,8 @@ def _(mo):
 @app.cell
 def _(get_data_dir, xr):
     data_dir = get_data_dir()
-    warm_cold_dataset = xr.open_dataset(data_dir / "warm_cold_state_mu0p9655.nc", engine="scipy")
-    edge_dataset = xr.open_dataset(data_dir / "edge_state_mu0p9655.nc", engine="scipy")
+    warm_cold_dataset = xr.open_dataset(data_dir / "warm_cold_state_mu1.nc", engine="scipy")
+    edge_dataset = xr.open_dataset(data_dir / "edge_state_mu1.nc", engine="scipy")
     return data_dir, edge_dataset, warm_cold_dataset
 
 
@@ -180,7 +180,6 @@ def _(global_asymp_temperature_edge, global_asymp_temperature_wc, plt):
     _ax.scatter(global_asymp_temperature_edge["mu"],global_asymp_temperature_edge["edge_state_temperature"])
     _ax.grid(alpha=0.4,linestyle='--')
     plt.show()
-
     return
 
 
@@ -201,9 +200,9 @@ def _(mo):
 
 @app.cell
 def _(data_dir, xr):
-    warm_input_filename = "stochastic_warm_state_mu0p97_{5}.nc"
+    warm_input_filename ="new_stochastic_warm_mu1.nc" #"stochastic_warm_state_mu0p97_{5}.nc"
     warm_ds = xr.open_dataset(data_dir / warm_input_filename)
-    edge_state_ds = xr.open_dataset(data_dir / "edge_state_mu0p9655.nc", engine="scipy")
+    edge_state_ds = xr.open_dataset(data_dir / "edge_state_mu1.nc", engine="scipy")
     return edge_state_ds, warm_ds, warm_input_filename
 
 
@@ -223,7 +222,7 @@ def _(YEAR, avg_T, plt):
     _ax.set_xlabel(xlabel=r"$t$ (years)",size=16)
     _ax.set_ylabel(ylabel=r"$\overline{T} $ (K) ",size=16)
     _ax.grid(alpha=0.4,linestyle='--')
-    # _ax.set_xlim(left=200,right=2400)
+    _ax.set_xlim(left=0,right=5000)
     # _ax.set_ylim(bottom=268,top=285)
     # _fig.savefig(get_repo_root() / "figures" /"warm_stochastic_trajectory_mu0p97.png",dpi=400)
     plt.show()
@@ -254,6 +253,88 @@ def _(YEAR, warm_ds):
         warm_asymptotic_temperature,
         warm_asymptotic_temperature_std,
     )
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Correlation functions
+    """)
+    return
+
+
+@app.cell
+def _(Delta_T, avg_T, condition):
+    from koopman_response.utils.signal import cross_correlation
+
+    avg_T_asymp = avg_T.where(cond=condition,drop=True)
+    Delta_T_asymp = Delta_T.where(cond=condition,drop=True)
+
+    dt = avg_T_asymp.attrs["stochastic_dt"] # in seconds
+
+    obs_avgT = avg_T_asymp["temperature"].values
+    lags_avgT, corr_avgT = cross_correlation(x=obs_avgT,y=obs_avgT,dt=dt,normalization="biased")
+
+
+    obs_DeltaT = Delta_T_asymp["temperature"].values
+    lags_DeltaT, corr_DeltaT = cross_correlation(x=obs_DeltaT,y=obs_DeltaT,dt=dt,normalization="biased")
+    return corr_DeltaT, corr_avgT, lags_DeltaT, lags_avgT
+
+
+@app.cell
+def _(YEAR, corr_DeltaT, corr_avgT, lags_DeltaT, lags_avgT, plt):
+    def limits_with_zero_fraction(ax, zero_fraction=0.15):
+          ymin, ymax = ax.get_ylim()
+
+          ymax = max(ymax, 0)
+          ymin = min(ymin, 0)
+
+          above = ymax
+          below = -ymin
+
+          required_below = zero_fraction / (1 - zero_fraction) * above
+          required_above = (1 - zero_fraction) / zero_fraction * below
+
+          if below < required_below:
+              ymin = -required_below
+          if above < required_above:
+              ymax = required_above
+
+          return ymin, ymax
+
+
+    def align_zero_yaxis(ax1, ax2, zero_fraction=0.15):
+          ax1.set_ylim(*limits_with_zero_fraction(ax1, zero_fraction))
+          ax2.set_ylim(*limits_with_zero_fraction(ax2, zero_fraction))
+
+
+    _fig, _ax1 = plt.subplots()
+    _ax2 = _ax1.twinx()
+
+    _ax1.plot(lags_avgT / YEAR * 12, corr_avgT, color="tab:blue", label=r"$\overline{T}$")
+    _ax2.plot(lags_DeltaT / YEAR * 12, corr_DeltaT, color="tab:red", label=r"$\Delta T$")
+
+    _ax1.set_xlim(left=-1, right=12)
+
+    align_zero_yaxis(_ax1, _ax2)
+
+
+    _ax1.set_xlabel(r"$\mathrm{Lag}\;[\mathrm{months}]$")
+    _ax1.set_ylabel(r"$C_{\overline{T}}$", color="tab:blue")
+    _ax2.set_ylabel(r"$C_{\Delta T}$", color="tab:red")
+
+    _ax1.tick_params(axis="y", labelcolor="tab:blue")
+    _ax2.tick_params(axis="y", labelcolor="tab:red")
+
+    _ax1.grid(alpha=0.3, linestyle="--")
+
+    _lines1, _labels1 = _ax1.get_legend_handles_labels()
+    _lines2, _labels2 = _ax2.get_legend_handles_labels()
+    _ax1.legend(_lines1 + _lines2, _labels1 + _labels2)
+
+    _fig.tight_layout()
+    _fig
+    return
 
 
 @app.cell
@@ -478,12 +559,12 @@ def _(
     edge_pole_T = latitude_weighted_mean(edge_state_ds, xmin=1/3, xmax=1)
     edge_Delta_T = edge_eq_T - edge_pole_T
 
-    _ax.scatter(x=edge_avg_T["edge_state_temperature"].item(), 
-                y=edge_Delta_T["edge_state_temperature"].item(),
-                marker="^",
-                s=45,
-                color="green"
-    )
+    # _ax.scatter(x=edge_avg_T["edge_state_temperature"].item(), 
+    #             y=edge_Delta_T["edge_state_temperature"].item(),
+    #             marker="^",
+    #             s=45,
+    #             color="green"
+    # )
     # _ax.set_xlim(xmin=290,right=305)
     # _ax.set_ylim(bottom=5,top=11)
     # _fig.savefig(get_repo_root() / "figures"/ "statistics_warm_near.png", dpi=400)
