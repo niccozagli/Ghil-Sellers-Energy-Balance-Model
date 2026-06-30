@@ -1,0 +1,3 @@
+[submodule "external/Koopman-Dynamical-Response"]
+	path = external/Koopman-Dynamical-Response
+	url = git@github.com:niccozagli/Koopman-Dynamical-Response.git

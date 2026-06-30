@@ -9,6 +9,7 @@ description = "Python port of the Ghil-Sellers Energy Balance Model."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "koopman-response",
     "marimo>=0.23.3",
     "matplotlib>=3.8",
     "numpy>=1.26",
@@ -16,3 +17,11 @@ dependencies = [
     "typer>=0.12",
     "xarray>=2024.6",
 ]
+
+[tool.uv.workspace]
+members = [
+    "external/Koopman-Dynamical-Response",
+]
+
+[tool.uv.sources]
+koopman-response = { workspace = true, editable = true }
