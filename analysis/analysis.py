@@ -38,14 +38,17 @@ def _():
     return (
         DAY,
         YEAR,
+        build_ivp_operator_from_dataset,
         edge_state_albedo_from_dataset,
         edge_state_heat_transfer_from_dataset,
         get_data_dir,
         latitude_weighted_mean,
+        meridional_heat_transfer_rate_watts_per_square_meter,
         mo,
         np,
         plot_asymptotic_state_diagnostics,
         plt,
+        surface_albedo,
         warm_cold_state_albedo_from_dataset,
         warm_cold_state_heat_transfer_from_dataset,
         xr,
@@ -207,7 +210,6 @@ def _(mo):
 def _(data_dir, xr):
     warm_input_filename ="new_stochastic_warm_mu1.nc" #"stochastic_warm_state_mu0p97_{5}.nc"
     warm_ds = xr.open_dataset(data_dir / warm_input_filename)
-    edge_state_ds = xr.open_dataset(data_dir / "edge_state_mu1.nc", engine="scipy")
     return (warm_ds,)
 
 
@@ -720,6 +722,227 @@ def _(DAY, delta_temperature, eigs_ct, global_temperature, np, phi_vals, plt):
     return
 
 
+@app.cell
+def _(
+    X_snap,
+    asymptotic_warm_ds,
+    build_ivp_operator_from_dataset,
+    centered_data,
+    idx,
+    meridional_heat_transfer_rate_watts_per_square_meter,
+    np,
+    plt,
+    space_coord,
+    spectrum,
+    surface_albedo,
+    tsvd,
+    warm_ds,
+):
+    _mode_observables_train = centered_data[:-1, :][idx]
+    if _mode_observables_train.shape[0] != X_snap.shape[0]:
+        raise ValueError("Local observables are not aligned with the KDMD training snapshots.")
+
+    koopman_mode_matrix = np.column_stack(
+        [
+            spectrum.koopman_modes(
+                _mode_observables_train[:, _latitude_index],
+                U_r=tsvd.Ur,
+                S_r=tsvd.Sr,
+            )
+            for _latitude_index in range(_mode_observables_train.shape[1])
+        ]
+    ).T
+
+    _mode_coord = np.asarray(space_coord, dtype=float)
+    if _mode_coord.ndim != 1 or _mode_coord.shape[0] != koopman_mode_matrix.shape[0]:
+        raise ValueError("Mode coordinate does not match Koopman mode shape.")
+
+    _warm_operator = build_ivp_operator_from_dataset(warm_ds)
+    _warm_albedo = surface_albedo(
+        asymptotic_warm_ds["temperature"].values,
+        _warm_operator.empirical_fields.b_parameter[None, :],
+        _warm_operator.empirical_fields.surface_height_offset[None, :],
+        _warm_operator.params,
+    )
+    _positive_albedo_mask = np.asarray(warm_ds["latitude"] >= 0, dtype=bool)
+    _albedo_coord = np.asarray(warm_ds["latitude"].values[_positive_albedo_mask], dtype=float)
+    _albedo_mean = np.asarray(_warm_albedo[:, _positive_albedo_mask].mean(axis=0), dtype=float)
+
+    _sorter = np.argsort(_albedo_coord)
+    _albedo_coord = _albedo_coord[_sorter]
+    _albedo_mean = _albedo_mean[_sorter]
+
+    if _albedo_coord.shape != _mode_coord.shape or not np.allclose(_albedo_coord, _mode_coord):
+        _albedo_mean_for_modes = np.interp(_mode_coord, _albedo_coord, _albedo_mean)
+    else:
+        _albedo_mean_for_modes = _albedo_mean
+
+    _latitude = np.asarray(warm_ds["latitude"].values, dtype=float)
+    _temperature = np.asarray(asymptotic_warm_ds["temperature"].values, dtype=float)
+    _temperature_x = np.gradient(_temperature, _latitude, axis=1)
+    _heat_flux = meridional_heat_transfer_rate_watts_per_square_meter(
+        _latitude[None, :],
+        _temperature,
+        _temperature_x,
+        _warm_operator.empirical_fields.sensible_heat_flux_coefficient[None, :],
+        _warm_operator.empirical_fields.latent_heat_flux_coefficient[None, :],
+        _warm_operator.params,
+    )
+    _mean_heat_flux = _heat_flux.mean(axis=0)
+    _positive_flux_mask = _latitude >= 0
+    _flux_coord = _latitude[_positive_flux_mask]
+    _mean_heat_flux_positive = _mean_heat_flux[_positive_flux_mask]
+    _flux_sorter = np.argsort(_flux_coord)
+    _flux_coord = _flux_coord[_flux_sorter]
+    _mean_heat_flux_positive = _mean_heat_flux_positive[_flux_sorter]
+    _mean_flux_derivative = np.gradient(_mean_heat_flux_positive, _flux_coord)
+    if _flux_coord.shape != _mode_coord.shape or not np.allclose(_flux_coord, _mode_coord):
+        _mean_flux_derivative_for_modes = np.interp(
+            _mode_coord,
+            _flux_coord,
+            _mean_flux_derivative,
+        )
+    else:
+        _mean_flux_derivative_for_modes = _mean_flux_derivative
+
+    _flux_derivative_finite = _mean_flux_derivative_for_modes[
+        np.isfinite(_mean_flux_derivative_for_modes)
+    ]
+    if _flux_derivative_finite.size:
+        _flux_derivative_absmax = float(np.nanmax(np.abs(_flux_derivative_finite)))
+    else:
+        _flux_derivative_absmax = 1.0
+    if _flux_derivative_absmax == 0.0:
+        _flux_derivative_absmax = 1.0
+
+    ice_line_latitude = np.nan
+    _valid = np.isfinite(_mode_coord) & np.isfinite(_albedo_mean_for_modes)
+    if np.count_nonzero(_valid) >= 2:
+        _ice_x = _mode_coord[_valid]
+        _ice_albedo = _albedo_mean_for_modes[_valid]
+        _ice_sorter = np.argsort(_ice_x)
+        _ice_x = _ice_x[_ice_sorter]
+        _ice_delta = _ice_albedo[_ice_sorter] - 0.5
+        _exact_crossings = np.flatnonzero(np.isclose(_ice_delta, 0.0, atol=1e-12))
+        if _exact_crossings.size:
+            ice_line_latitude = float(_ice_x[_exact_crossings[0]])
+        else:
+            _sign_crossings = np.flatnonzero(_ice_delta[:-1] * _ice_delta[1:] < 0.0)
+            if _sign_crossings.size:
+                _crossing_index = _sign_crossings[0]
+                _x0 = _ice_x[_crossing_index]
+                _x1 = _ice_x[_crossing_index + 1]
+                _y0 = _ice_delta[_crossing_index]
+                _y1 = _ice_delta[_crossing_index + 1]
+                ice_line_latitude = float(_x0 - _y0 * (_x1 - _x0) / (_y1 - _y0))
+
+    _mode_indices = tuple(
+        _mode_index
+        for _mode_index in (1, 5)
+        if _mode_index < koopman_mode_matrix.shape[1]
+    )
+    if not _mode_indices:
+        raise ValueError("No Koopman mode indices are available to plot.")
+
+    _mode_values = np.concatenate(
+        [
+            koopman_mode_matrix[:, _mode_index].real
+            for _mode_index in _mode_indices
+        ]
+    )
+    _mode_values_finite = _mode_values[np.isfinite(_mode_values)]
+    if _mode_values_finite.size:
+        _mode_absmax = float(np.nanmax(np.abs(_mode_values_finite)))
+    else:
+        _mode_absmax = 1.0
+    if _mode_absmax == 0.0:
+        _mode_absmax = 1.0
+
+    koopman_mode_fig, _mode_axes = plt.subplots(
+        1,
+        2,
+        figsize=(12, 4),
+        sharex=True,
+        sharey=True,
+    )
+    _mode_axes = np.atleast_1d(_mode_axes).ravel()
+
+    _flux_derivative_axes = []
+    for _mode_ax, _mode_index in zip(_mode_axes, _mode_indices):
+        _mode_profile = -koopman_mode_matrix[:, _mode_index]
+        _mode_ax.plot(
+            _mode_coord,
+            _mode_profile.real,
+            color="blue",
+            label="Mode",
+            linewidth=2
+        )
+        if np.isfinite(ice_line_latitude):
+            _mode_ax.axvline(
+                ice_line_latitude,
+                color="tab:red",
+                linestyle="--",
+                lw=1.2,
+            )
+            _mode_ax.annotate(
+                r"$x_{\alpha=0.5}$",
+                xy=(ice_line_latitude, 0.5),
+                xycoords=("data", "axes fraction"),
+                xytext=(4, 0),
+                textcoords="offset points",
+                color="tab:red",
+                rotation=90,
+                va="center",
+                ha="left",
+                fontsize= 16
+            )
+
+        _mode_ax.set_title(rf"Koopman mode for $\phi_{{{_mode_index}}}$", size=14)
+        _mode_ax.grid(alpha=0.3)
+
+        _flux_derivative_ax = _mode_ax.twinx()
+        _flux_derivative_ax.plot(
+            _mode_coord,
+            _mean_flux_derivative_for_modes,
+            color="0.45",
+            linestyle="--",
+            lw=1.2,
+            alpha=0.75,
+            label=r"$\partial_x j$",
+        )
+        _flux_derivative_ax.set_ylim(
+            -1.05 * _flux_derivative_absmax,
+            1.05 * _flux_derivative_absmax,
+        )
+        _flux_derivative_ax.tick_params(axis="y", labelcolor="0.35")
+        _flux_derivative_axes.append(_flux_derivative_ax)
+
+    for _unused_ax in _mode_axes[len(_mode_indices):]:
+        _unused_ax.axis("off")
+
+    for _mode_ax in _mode_axes:
+        _mode_ax.set_xlabel(r"$x$", size=16)
+    for _mode_ax in _mode_axes:
+        _mode_ax.set_ylabel("Mode amplitude")
+        _mode_ax.tick_params(axis="y")
+    for _mode_ax in _mode_axes:
+        _mode_ax.set_xlim(left=float(_mode_coord.min()), right=float(_mode_coord.max()))
+        _mode_ax.set_ylim(-1.05 * _mode_absmax, 1.05 * _mode_absmax)
+    for _flux_derivative_ax in _flux_derivative_axes[:-1]:
+        _flux_derivative_ax.set_ylabel("")
+        _flux_derivative_ax.tick_params(axis="y", labelright=False)
+    if _flux_derivative_axes:
+        _flux_derivative_axes[-1].set_ylabel(
+            r"$\partial_x j \; [\mathrm{W}\,\mathrm{m}^{-2}]$",
+            color="0.35",
+        )
+
+    koopman_mode_fig.tight_layout()
+    koopman_mode_fig
+    #koopman_mode_fig.savefig("../figures/Koopman_modes.png", dpi=400)
+    return
+
+
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
@@ -979,277 +1202,6 @@ def _():
 
 @app.cell
 def _():
-    return
-
-
-@app.cell
-def _():
-    # warm_operator = build_ivp_operator_from_dataset(warm_ds)
-    # warm_albedo = xr.DataArray(
-    #     surface_albedo(
-    #         asymptotic_warm_ds["temperature"].values,
-    #         warm_operator.empirical_fields.b_parameter[None, :],
-    #         warm_operator.empirical_fields.surface_height_offset[None, :],
-    #         warm_operator.params,
-    #     ),
-    #     dims=("time", "latitude"),
-    #     coords={
-    #         "time": asymptotic_warm_ds["time"],
-    #         "latitude": warm_ds["latitude"],
-    #     },
-    #     name="temperature_albedo",
-    #     attrs={"units": "1", "long_name": "post-transient albedo"},
-    # )
-    # warm_temperature_x = np.gradient(
-    #     asymptotic_warm_ds["temperature"].values,
-    #     warm_ds["latitude"].values,
-    #     axis=1,
-    # )
-    # warm_heat_flux = xr.DataArray(
-    #     meridional_heat_transfer_rate_watts_per_square_meter(
-    #         warm_ds["latitude"].values[None, :],
-    #         asymptotic_warm_ds["temperature"].values,
-    #         warm_temperature_x,
-    #         warm_operator.empirical_fields.sensible_heat_flux_coefficient[None, :],
-    #         warm_operator.empirical_fields.latent_heat_flux_coefficient[None, :],
-    #         warm_operator.params,
-    #     ),
-    #     dims=("time", "latitude"),
-    #     coords={
-    #         "time": asymptotic_warm_ds["time"],
-    #         "latitude": warm_ds["latitude"],
-    #     },
-    #     name="temperature_heat_flux",
-    #     attrs={"units": "W m^-2", "long_name": "post-transient meridional heat-transfer rate"},
-    # )
-    # warm_albedo_profile = warm_albedo.mean(dim="time")
-    # warm_albedo_profile_std = warm_albedo.std(dim="time")
-    # warm_heat_flux_profile = warm_heat_flux.mean(dim="time")
-    # warm_heat_flux_profile_std = warm_heat_flux.std(dim="time")
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md("""
-    ### Asymptotic Stochastic Profiles
-    """)
-    return
-
-
-@app.cell
-def _():
-    # _transient_years = transient / YEAR
-    # _latitude = warm_ds["latitude"].values
-    # _temperature_mean = warm_asymptotic_temperature.values
-    # # _temperature_std = warm_asymptotic_temperature_std.values
-    # _albedo_mean = warm_albedo_profile.values
-    # _albedo_std = warm_albedo_profile_std.values
-    # _flux_mean = warm_heat_flux_profile.values
-    # _flux_std = warm_heat_flux_profile_std.values
-    # _profile_fig, (_temperature_ax, _albedo_ax, _flux_ax) = plt.subplots(
-    #     3,
-    #     1,
-    #     figsize=(8, 9),
-    #     sharex=True,
-    # )
-    # _temperature_ax.plot(
-    #     _latitude,
-    #     _temperature_mean,
-    #     color="red",
-    # )
-    # _temperature_ax.fill_between(
-    #     _latitude,
-    #     _temperature_mean - _temperature_std,
-    #     _temperature_mean + _temperature_std,
-    #     color="red",
-    #     alpha=0.15,
-    # )
-    # _temperature_ax.set_ylabel("Temperature [K]")
-    # _temperature_ax.grid(True, alpha=0.3)
-
-    # _albedo_ax.plot(
-    #     _latitude,
-    #     _albedo_mean,
-    #     color="red",
-    # )
-    # _albedo_ax.fill_between(
-    #     _latitude,
-    #     _albedo_mean - _albedo_std,
-    #     _albedo_mean + _albedo_std,
-    #     color="red",
-    #     alpha=0.15,
-    # )
-    # _albedo_ax.set_ylabel("Albedo")
-    # _albedo_ax.grid(True, alpha=0.3)
-
-    # _flux_ax.plot(
-    #     _latitude,
-    #     _flux_mean,
-    #     color="red",
-    # )
-    # _flux_ax.fill_between(
-    #     _latitude,
-    #     _flux_mean - _flux_std,
-    #     _flux_mean + _flux_std,
-    #     color="red",
-    #     alpha=0.15,
-    # )
-    # _flux_ax.set_xlabel("Normalized latitude x")
-    # _flux_ax.set_ylabel(r"Heat flux $j$ [W m$^{-2}$]")
-
-    # _flux_ax.grid(True, alpha=0.3)
-    # _flux_ax.set_xlim(left=0, right=1)
-    # _flux_ax.set_ylim(bottom=0)
-    # _profile_fig.tight_layout()
-    # # _profile_fig.savefig(get_repo_root() / "figures" / "stochastic_avg_profiles_near.png", dpi=400)
-    # plt.show()
-    return
-
-
-@app.cell
-def _():
-    # from matplotlib.colors import LogNorm
-    # from scipy.stats import gaussian_kde
-
-    # _fig, _ax = plt.subplots(figsize=(8, 6))
-
-    # asymptotic_Delta_T = Delta_T.where(cond=condition, drop=True)
-    # asymptotic_avg_T = avg_T.where(cond=condition, drop=True)
-
-    # _x = asymptotic_avg_T["temperature"].values.ravel()
-    # _y = asymptotic_Delta_T["temperature"].values.ravel()
-    # _mask = np.isfinite(_x) & np.isfinite(_y)
-    # _x = _x[_mask]
-    # _y = _y[_mask]
-
-    # _x_pad = 0.1 * (_x.max() - _x.min())
-    # _y_pad = 0.1 * (_y.max() - _y.min())
-
-    # _x_grid = np.linspace(_x.min() - _x_pad, _x.max() + _x_pad, 300)
-    # _y_grid = np.linspace(_y.min() - _y_pad, _y.max() + _y_pad, 300)
-
-
-    # _X, _Y = np.meshgrid(_x_grid, _y_grid)
-
-    # _samples = np.vstack([_x, _y])
-    # _kde = gaussian_kde(_samples, bw_method=0.15)
-    # _Z = _kde(np.vstack([_X.ravel(), _Y.ravel()])).reshape(_X.shape)
-
-    # _levels = np.array([1e-6,5e-6,1e-5,5e-5,1e-4, 5e-4, 1e-3, 5e-3, 1e-2,5e-2,1e-1])
-    # _Z = np.ma.masked_less(_Z, _levels[0])
-
-    # _contour = _ax.contourf(
-    #     _X,
-    #     _Y,
-    #     _Z,
-    #     levels=_levels,
-    #     cmap="coolwarm",
-    #     norm=LogNorm(vmin=_levels[0], vmax=_levels[-1]),
-    #     extend="max",
-    # )
-    # _ax.contour(
-    #     _X,
-    #     _Y,
-    #     _Z,
-    #     levels=_levels,
-    #     colors="white",
-    #     linewidths=0.6,
-    #     alpha=0.4,
-    # )
-
-    # _colorbar = _fig.colorbar(_contour, ax=_ax, ticks=_levels)
-    # _colorbar.set_ticklabels([f"{_level:.0e}" for _level in _levels])
-    # _ax.set_xlabel(r"$\overline{T} [K]$",size=16)
-    # _ax.set_ylabel(r"$\Delta T [K]$",size=16)
-
-
-
-    # edge_avg_T = latitude_weighted_mean(edge_state_ds, xmin=0, xmax=1)
-    # edge_eq_T = latitude_weighted_mean(edge_state_ds, xmin=0, xmax=1/3)
-    # edge_pole_T = latitude_weighted_mean(edge_state_ds, xmin=1/3, xmax=1)
-    # edge_Delta_T = edge_eq_T - edge_pole_T
-
-    # # _ax.scatter(x=edge_avg_T["edge_state_temperature"].item(), 
-    # #             y=edge_Delta_T["edge_state_temperature"].item(),
-    # #             marker="^",
-    # #             s=45,
-    # #             color="green"
-    # # )
-    # # _ax.set_xlim(xmin=290,right=305)
-    # # _ax.set_ylim(bottom=5,top=11)
-    # # _fig.savefig(get_repo_root() / "figures"/ "statistics_warm_near.png", dpi=400)
-    # plt.show()
-    return
-
-
-@app.cell
-def _():
-
-    # _fig, _ax = plt.subplots(figsize=(8, 6))
-
-
-    # _x = asymptotic_avg_T["temperature"].values.ravel()
-    # _y = asymptotic_Delta_T["temperature"].values.ravel()
-    # _mask = np.isfinite(_x) & np.isfinite(_y)
-    # _x = _x[_mask]
-    # _y = _y[_mask]
-
-    # _ax.scatter(x=_x,y=_y,marker='.',s=25,color="blue")
-
-    # _ax.scatter(x=edge_avg_T["edge_state_temperature"].item(), 
-    #             y=edge_Delta_T["edge_state_temperature"].item(),
-    #             marker="^",
-    #             s=50,
-    #             color="red"
-    # )
-    # # _ax.set_xlim(xmin=290,right=305)
-    # # _ax.set_ylim(bottom=5,top=11)
-    # # _fig.savefig(get_repo_root() / "figures"/ "statistics_warm_near.png", dpi=400)
-    # plt.show()
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ### Saving the data
-    """)
-    return
-
-
-@app.cell
-def _():
-    # dt = (asymptotic_warm_ds["time"].values[1] - asymptotic_warm_ds["time"].values[0] ) / DAY
-    # export_attrs = dict(warm_ds.attrs)
-    # export_attrs.update(
-    #     {
-    #         "title": "Derived asymptotic stochastic diagnostics",
-    #         "source_dataset_filename": warm_input_filename,
-    #         "source_dataset_path": str(data_dir / warm_input_filename),
-    #         "output_dataset_filename": warm_input_filename,
-    #         "output_dataset_path": str(data_dir / warm_input_filename),
-    #         "analysis_transient_years": float(transient),
-    #         "analysis_stop_years": float(stop),
-    #         "tau [days]": dt,
-    #         "latitude slicing" : "Northern Emisphere"
-    #     }
-    # )
-    # export_dataset = xr.Dataset(
-    #     data_vars={
-    #         "edge_state_temperature" : edge_dataset.where(edge_dataset["latitude"] > 0,drop=True)["edge_state_temperature"],
-    #         "edge_state_albedo" : edge_albedo.where(edge_albedo["latitude"]>0,drop=True),
-    #         "asymptotic_temperature": asymptotic_warm_ds.where(asymptotic_warm_ds["latitude"]>0,drop=True)["temperature"],
-    #         "warm_albedo": warm_albedo.where(warm_albedo["latitude"]>0,drop=True),
-    #         "warm_heat_flux": warm_heat_flux.where(warm_heat_flux["latitude"] > 0,drop=True),
-    #         "asymptotic_Delta_T": asymptotic_Delta_T["temperature"],
-    #         "asymptotic_avg_T": asymptotic_avg_T["temperature"],
-    #     },
-    #     attrs=export_attrs,
-    # )
-
-    # output_path = data_dir / "koopman_data" / warm_input_filename
-    # export_dataset.to_netcdf(output_path, engine="scipy")
     return
 
 
