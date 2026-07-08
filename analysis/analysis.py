@@ -229,7 +229,7 @@ def _(YEAR, avg_T, plt):
     _ax.set_xlabel(xlabel=r"$t$ (years)",size=16)
     _ax.set_ylabel(ylabel=r"$\overline{T} $ (K) ",size=16)
     _ax.grid(alpha=0.4,linestyle='--')
-    _ax.set_xlim(left=0,right=5000)
+    _ax.set_xlim(left=0,right=2000)
     # _ax.set_ylim(bottom=268,top=285)
     # _fig.savefig(get_repo_root() / "figures" /"warm_stochastic_trajectory_mu0p97.png",dpi=400)
     plt.show()
@@ -264,13 +264,21 @@ def _(mo):
 
 
 @app.cell
-def _(Delta_T, avg_T, condition):
+def _(Delta_T, avg_T, condition, np):
     from koopman_response.utils.signal import cross_correlation as _cross_correlation
 
     avg_T_asymp = avg_T.where(cond=condition,drop=True)
     Delta_T_asymp = Delta_T.where(cond=condition,drop=True)
 
-    dt = avg_T_asymp.attrs["stochastic_dt"] # in seconds
+    # Sampling interval of the SAVED series is stochastic_dt * save_every, not the
+    # raw solver step. Derive it from the time coordinate so save_every is always
+    # accounted for (otherwise correlation/Koopman timescales are too fast by
+    # save_every, e.g. 30x -> months instead of years).
+    dt = float(np.median(np.diff(avg_T_asymp["time"].values)))  # in seconds
+    _expected_dt = (
+        avg_T_asymp.attrs["stochastic_dt"] * avg_T_asymp.attrs["stochastic_save_every"]
+    )
+    assert np.isclose(dt, _expected_dt, rtol=1e-6), (dt, _expected_dt)
 
     obs_avgT = avg_T_asymp["temperature"].values
     lags_avgT, corr_avgT = _cross_correlation(x=obs_avgT,y=obs_avgT,dt=dt,normalization="biased")
@@ -284,7 +292,7 @@ def _(Delta_T, avg_T, condition):
 @app.cell
 def _(YEAR, asymptotic_warm_ds, dt, np):
     from koopman_response.utils.signal import cross_correlation as _cross_correlation
-    _local_corr_lag_window_months = 15.0
+    _local_corr_lag_window_years = 25.0
 
 
     _local_corr_latitude_condition = asymptotic_warm_ds["latitude"] >= 0
@@ -301,7 +309,7 @@ def _(YEAR, asymptotic_warm_ds, dt, np):
 
 
     local_corr_max_lag = min(
-        int(round(_local_corr_lag_window_months / 12.0 * YEAR / dt)),
+        int(round(_local_corr_lag_window_years * YEAR / dt)),
         local_temperature.shape[0] - 1,
     )
     local_corr_columns = []
@@ -325,11 +333,11 @@ def _(YEAR, asymptotic_warm_ds, dt, np):
 
 @app.cell
 def _(YEAR, local_corr, local_corr_lags, local_corr_latitude, np, plt):
-    _lag_months = local_corr_lags / YEAR * 12.0
+    _lag_years = local_corr_lags / YEAR
     _plot_stride = max(1, local_corr.shape[0] // 300)
     _latitude_grid, _lag_grid = np.meshgrid(
         local_corr_latitude,
-        _lag_months[::_plot_stride],
+        _lag_years[::_plot_stride],
     )
     _surface_values = local_corr[::_plot_stride, :]
 
@@ -347,10 +355,10 @@ def _(YEAR, local_corr, local_corr_lags, local_corr_latitude, np, plt):
     )
 
     _ax.set_xlabel(r"$x$", fontsize=14)
-    _ax.set_ylabel(r"$t \; [\mathrm{months}]$", fontsize=14)
+    _ax.set_ylabel(r"$t \; [\mathrm{years}]$", fontsize=14)
     _ax.set_zlabel(r"$C_T(x,t)$", fontsize=14)
     _ax.set_xlim(local_corr_latitude.min(), local_corr_latitude.max())
-    _ax.set_ylim(_lag_months.min(), _lag_months.max())
+    _ax.set_ylim(_lag_years.min(), _lag_years.max())
     _ax.view_init(elev=28, azim=45)
     _fig.colorbar(_surface, ax=_ax, shrink=0.65, pad=0.12, label=r"$C_T(x,t)$")
     _fig.tight_layout()
@@ -559,13 +567,13 @@ def _(KoopmanSpectrumKDMD, dt_eff, kdmd, tsvd):
 
 
 @app.cell
-def _(DAY, eigs_ct, plt):
+def _(YEAR, eigs_ct, plt):
     fig, ax = plt.subplots(figsize=(4, 4))
-    ax.plot(eigs_ct.real * DAY  , eigs_ct.imag * DAY    , ".", ms=4)
-    ax.set_xlabel(r"$\mathrm{Re}\,\lambda$ [day$^{-1}$]",size=16)
-    ax.set_ylabel(r"$\mathrm{Im}\,\lambda$ [day$^{-1}$]",size=16)
+    ax.plot(eigs_ct.real * YEAR , eigs_ct.imag * YEAR    , ".", ms=4)
+    ax.set_xlabel(r"$\mathrm{Re}\,\lambda$ [year$^{-1}$]",size=16)
+    ax.set_ylabel(r"$\mathrm{Im}\,\lambda$ [year$^{-1}$]",size=16)
     ax.grid(alpha=0.3)
-    #ax.set_xlim(left=-0.2, right=0.01)
+    ax.set_xlim(left=-2, right=0.01)
     ax.set_ylim(bottom=-0.001, top=0.001)
     # fig.savefig("figures/eigenvalues_near.png",dpi=400)
     plt.tight_layout()
@@ -623,12 +631,12 @@ def _(X, centered_data, dt_eff, np, space_coord):
 
 
 @app.cell
-def _(DAY, delta_temperature, eigs_ct, global_temperature, np, phi_vals, plt):
+def _(YEAR, delta_temperature, eigs_ct, global_temperature, np, phi_vals, plt):
     from matplotlib.cm import ScalarMappable
     from scipy.stats import binned_statistic_2d
     grid4_bins = 80
     grid4_min_count = 4
-    grid4_eigfunc_indices =  (1, 2, 3, 6,7)
+    grid4_eigfunc_indices =  (1, 2, 3, 5,6)
 
     grid4_T = global_temperature
     grid4_dT = delta_temperature
@@ -648,11 +656,11 @@ def _(DAY, delta_temperature, eigs_ct, global_temperature, np, phi_vals, plt):
     grid4_axes = grid4_axes.ravel()
 
     grid4_eigs_ax = grid4_axes[0]
-    grid4_eigs_ax.plot(eigs_ct.real * DAY, eigs_ct.imag * DAY, ".", ms=4)
+    grid4_eigs_ax.plot(eigs_ct.real * YEAR, eigs_ct.imag * YEAR, ".", ms=4)
 
-    grid4_eigs_ax.set_xlabel(r"$\mathrm{Re}\,\lambda$ [day$^{-1}$]", size=16)
-    grid4_eigs_ax.set_ylabel(r"$\mathrm{Im}\,\lambda$ [day$^{-1}$]", size=16)
-    grid4_eigs_ax.set_xlim(left=-0.2, right=0.01)
+    grid4_eigs_ax.set_xlabel(r"$\mathrm{Re}\,\lambda$ [year$^{-1}$]", size=16)
+    grid4_eigs_ax.set_ylabel(r"$\mathrm{Im}\,\lambda$ [year$^{-1}$]", size=16)
+    grid4_eigs_ax.set_xlim(left=-2.5, right=0.01)
     grid4_eigs_ax.set_ylim(bottom=-0.001, top=0.001)
     grid4_eigs_ax.grid(alpha=0.3)
     grid4_eigs_cbar = grid4_fig.colorbar(ScalarMappable(), ax=grid4_eigs_ax)
@@ -718,7 +726,7 @@ def _(DAY, delta_temperature, eigs_ct, global_temperature, np, phi_vals, plt):
     plt.tight_layout()
     plt.show()
 
-    #grid4_fig.savefig("../figures/Koopman_Eigenfunctions_mu0p972.png",dpi=400)
+    #grid4_fig.savefig("../figures/Koopman_Eigenfunctions_mu1.png",dpi=400)
     return
 
 
@@ -1062,7 +1070,7 @@ def _(
     np,
     plt,
 ):
-    _lag_months = local_corr_lags / YEAR * 12.0
+    _lag_months = local_corr_lags / YEAR 
     _plot_stride = max(1, local_corr.shape[0] // 300)
 
     _latitude_grid, _lag_grid = np.meshgrid(
@@ -1103,7 +1111,7 @@ def _(
         )
         _ax.set_title(_title, fontsize=14)
         _ax.set_xlabel(r"$x$", fontsize=11)
-        _ax.set_ylabel(r"$t \; [\mathrm{months}]$", fontsize=11)
+        _ax.set_ylabel(r"$t \; [\mathrm{year}]$", fontsize=11)
         _ax.set_xlim(local_corr_latitude.min(), local_corr_latitude.max())
         _ax.set_ylim(_lag_months.min(), _lag_months.max())
         _ax.view_init(elev=28, azim=45)
@@ -1111,7 +1119,7 @@ def _(
 
     _fig.tight_layout()
     _fig
-    # _fig.savefig("../figures/spatial_correlation_functions.png",dpi=400)
+    #_fig.savefig("../figures/spatial_correlation_functions.png",dpi=400)
     return
 
 
@@ -1155,9 +1163,9 @@ def _(
     _ax2 = _ax1.twinx()
     _marker_stride = 10
 
-    _ax1.plot(lags_avgT / YEAR * 12, corr_avgT, color="blue", label=r"$\overline{T}$")
+    _ax1.plot(lags_avgT / YEAR , corr_avgT, color="blue", label=r"$\overline{T}$")
     _ax1.plot(
-        lags_avgT[::_marker_stride] / YEAR * 12,
+        lags_avgT[::_marker_stride] / YEAR ,
         corr_avgT_kdmd(lags_avgT[::_marker_stride]).real,
         color="blue",
         linestyle="none",
@@ -1165,9 +1173,9 @@ def _(
         markersize=7,
         label=r"$\overline{T}$ KDMD",
     )
-    _ax2.plot(lags_DeltaT / YEAR * 12, corr_DeltaT, color="red", label=r"$\Delta T$")
+    _ax2.plot(lags_DeltaT / YEAR , corr_DeltaT, color="red", label=r"$\Delta T$")
     _ax2.plot(
-        lags_DeltaT[::_marker_stride] / YEAR * 12,
+        lags_DeltaT[::_marker_stride] / YEAR,
         corr_DeltaT_kdmd(lags_DeltaT[::_marker_stride]).real,
         color="red",
         linestyle="none",
@@ -1176,12 +1184,12 @@ def _(
         label=r"$\Delta T$ KDMD",
     )
 
-    _ax1.set_xlim(left=-1, right=40)
+    _ax1.set_xlim(left=-1, right=25)
 
     align_zero_yaxis(_ax1, _ax2)
 
 
-    _ax1.set_xlabel(r"$t \; [\mathrm{months}]$",fontsize=16)
+    _ax1.set_xlabel(r"$t \; [\mathrm{year}]$",fontsize=16)
     _ax1.set_ylabel(r"$C_{\overline{T}}$", color="blue",fontsize=16)
     _ax2.set_ylabel(r"$C_{\Delta T}$", color="red",fontsize=16)
 
@@ -1193,7 +1201,7 @@ def _(
 
     _fig.tight_layout()
     _fig
-    #_fig.savefig("../figures/correlation_function_reconstruction_mu0p972.png",dpi=400)
+    #_fig.savefig("../figures/correlation_function_reconstruction_mu1.png",dpi=400)
     return
 
 
@@ -1207,16 +1215,16 @@ def _(mo):
 
 @app.cell
 def _(data_dir, xr):
-    response_numerical = xr.open_dataset(data_dir / "response_mu_mu1.nc")
+    response_numerical = xr.open_dataset(data_dir / "response_co2_mu1.nc")
     response_numerical
     return (response_numerical,)
 
 
 @app.cell
-def _(YEAR, np, plt, response_numerical):
+def _(DAY, YEAR, np, plt, response_numerical):
     response_latitude = response_numerical["latitude"].values
     response_time_years = response_numerical["time"].values / YEAR
-    response_green_function_per_year = response_numerical["green_function_temperature"] * YEAR
+    response_green_function_per_year = response_numerical["green_function_temperature"] * DAY
 
     if response_green_function_per_year.ndim != 2:
         raise ValueError("Expected green_function_temperature with dimensions (time, latitude).")
@@ -1251,7 +1259,7 @@ def _(YEAR, np, plt, response_numerical):
 
     _ax.set_xlabel(r"$x$", fontsize=14)
     _ax.set_ylabel(r"$t \; [\mathrm{year}]$", fontsize=14)
-    _ax.set_zlabel(r"$G_T(x,t) \; [\mathrm{K}\,\mathrm{year}^{-1}]$", fontsize=14)
+    _ax.set_zlabel(r"$G_T(x,t) \; [\mathrm{K}\,\mathrm{day}^{-1}]$", fontsize=14)
     _ax.set_xlim(response_latitude.min(), response_latitude.max())
     _ax.set_ylim(response_time_years.min(), response_time_years.max())
     _ax.view_init(elev=28, azim=45)
@@ -1260,11 +1268,11 @@ def _(YEAR, np, plt, response_numerical):
         ax=_ax,
         shrink=0.65,
         pad=0.12,
-        label=r"$G_T(x,t) \; [\mathrm{K}\,\mathrm{year}^{-1}]$",
+        label=r"$G_T(x,t) \; [\mathrm{K}\,\mathrm{day}^{-1}]$",
     )
     _fig.tight_layout()
     _fig
-    #_fig.savefig("../figures/response_green_function_mu1.png", dpi=400)
+    _fig.savefig("../figures/response_green_function_mu1.png", dpi=400)
     return
 
 
@@ -1371,10 +1379,20 @@ def _(
         _dataset = xr.open_dataset(_dataset_path)
         try:
             _mu_value = float(_dataset.attrs["param_mu"])
-            _dt_value = float(_dataset.attrs["stochastic_dt"])
             _asymptotic_dataset = _dataset.where(
                 cond=_dataset["time"] > _tipping_transient_years * YEAR,
                 drop=True,
+            )
+            # Saved-snapshot spacing is stochastic_dt * save_every; derive it from
+            # the time coordinate so continuous-time eigenvalues use the correct
+            # timescale (raw stochastic_dt would be too fast by save_every).
+            _dt_value = float(np.median(np.diff(_asymptotic_dataset["time"].values)))
+            _expected_dt_value = (
+                _dataset.attrs["stochastic_dt"] * _dataset.attrs["stochastic_save_every"]
+            )
+            assert np.isclose(_dt_value, _expected_dt_value, rtol=1e-6), (
+                _dt_value,
+                _expected_dt_value,
             )
             _scaled_data = _tipping_scaled_positive_temperature(_asymptotic_dataset)
         finally:
