@@ -284,7 +284,7 @@ def _(Delta_T, avg_T, condition):
 @app.cell
 def _(YEAR, asymptotic_warm_ds, dt, np):
     from koopman_response.utils.signal import cross_correlation as _cross_correlation
-    _local_corr_lag_window_months = 12.0
+    _local_corr_lag_window_months = 15.0
 
 
     _local_corr_latitude_condition = asymptotic_warm_ds["latitude"] >= 0
@@ -565,7 +565,7 @@ def _(DAY, eigs_ct, plt):
     ax.set_xlabel(r"$\mathrm{Re}\,\lambda$ [day$^{-1}$]",size=16)
     ax.set_ylabel(r"$\mathrm{Im}\,\lambda$ [day$^{-1}$]",size=16)
     ax.grid(alpha=0.3)
-    ax.set_xlim(left=-0.2, right=0.01)
+    #ax.set_xlim(left=-0.2, right=0.01)
     ax.set_ylim(bottom=-0.001, top=0.001)
     # fig.savefig("figures/eigenvalues_near.png",dpi=400)
     plt.tight_layout()
@@ -627,8 +627,8 @@ def _(DAY, delta_temperature, eigs_ct, global_temperature, np, phi_vals, plt):
     from matplotlib.cm import ScalarMappable
     from scipy.stats import binned_statistic_2d
     grid4_bins = 80
-    grid4_min_count = 5
-    grid4_eigfunc_indices = (1, 2, 3, 5, 6)
+    grid4_min_count = 4
+    grid4_eigfunc_indices =  (1, 2, 3, 6,7)
 
     grid4_T = global_temperature
     grid4_dT = delta_temperature
@@ -718,7 +718,7 @@ def _(DAY, delta_temperature, eigs_ct, global_temperature, np, phi_vals, plt):
     plt.tight_layout()
     plt.show()
 
-    #grid4_fig.savefig("../figures/Koopman_Eigenfunctions.png",dpi=400)
+    #grid4_fig.savefig("../figures/Koopman_Eigenfunctions_mu0p972.png",dpi=400)
     return
 
 
@@ -838,7 +838,7 @@ def _(
 
     _mode_indices = tuple(
         _mode_index
-        for _mode_index in (1, 5)
+        for _mode_index in (1, 6)
         if _mode_index < koopman_mode_matrix.shape[1]
     )
     if not _mode_indices:
@@ -869,7 +869,9 @@ def _(
 
     _flux_derivative_axes = []
     for _mode_ax, _mode_index in zip(_mode_axes, _mode_indices):
+
         _mode_profile = -koopman_mode_matrix[:, _mode_index]
+
         _mode_ax.plot(
             _mode_coord,
             _mode_profile.real,
@@ -939,7 +941,7 @@ def _(
 
     koopman_mode_fig.tight_layout()
     koopman_mode_fig
-    #koopman_mode_fig.savefig("../figures/Koopman_modes.png", dpi=400)
+    #koopman_mode_fig.savefig("../figures/Koopman_modes_mu0p972.png", dpi=400)
     return
 
 
@@ -1080,8 +1082,8 @@ def _(
 
     _fig = plt.figure(figsize=(16, 5))
     _surface_specs = (
-        (r"$C_T(x,t)$ empirical", _empirical_surface, "coolwarm", -_corr_absmax, _corr_absmax),
-        (r"$C_T(x,t)$ KDMD", _kdmd_surface, "coolwarm", -_corr_absmax, _corr_absmax),
+        (r"$C_T(x,t)$ empirical", _empirical_surface, "coolwarm", 0, _corr_absmax),
+        (r"$C_T(x,t)$ KDMD", _kdmd_surface, "coolwarm", 0, _corr_absmax),
         (r"Difference", _error_surface, "coolwarm", -_error_absmax, _error_absmax),
     )
 
@@ -1174,7 +1176,7 @@ def _(
         label=r"$\Delta T$ KDMD",
     )
 
-    _ax1.set_xlim(left=-1, right=12)
+    _ax1.set_xlim(left=-1, right=40)
 
     align_zero_yaxis(_ax1, _ax2)
 
@@ -1191,27 +1193,347 @@ def _(
 
     _fig.tight_layout()
     _fig
-    # _fig.savefig("../figures/correlation_function_reconstruction.png",dpi=400)
+    #_fig.savefig("../figures/correlation_function_reconstruction_mu0p972.png",dpi=400)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Response Functions
+    """)
+    return
+
+
+@app.cell
+def _(data_dir, xr):
+    response_numerical = xr.open_dataset(data_dir / "response_mu_mu1.nc")
+    response_numerical
+    return (response_numerical,)
+
+
+@app.cell
+def _(YEAR, np, plt, response_numerical):
+    response_latitude = response_numerical["latitude"].values
+    response_time_years = response_numerical["time"].values / YEAR
+    response_green_function_per_year = response_numerical["green_function_temperature"] * YEAR
+
+    if response_green_function_per_year.ndim != 2:
+        raise ValueError("Expected green_function_temperature with dimensions (time, latitude).")
+    if response_green_function_per_year.shape != (response_time_years.size, response_latitude.size):
+        raise ValueError("Response Green's function shape does not match time and latitude coordinates.")
+    if not np.isfinite(response_green_function_per_year).all():
+        raise ValueError("Response Green's function contains non-finite values.")
+
+    _plot_stride = max(1, response_green_function_per_year.shape[0] // 300)
+    _latitude_grid, _time_grid = np.meshgrid(
+        response_latitude,
+        response_time_years[::_plot_stride],
+    )
+    _surface_values = response_green_function_per_year[::_plot_stride, :]
+    _response_min = np.nanmin(_surface_values)
+    _response_max = np.nanmax(_surface_values)
+
+    _fig = plt.figure(figsize=(9, 6))
+    _ax = _fig.add_subplot(111, projection="3d")
+    _surface = _ax.plot_surface(
+        _latitude_grid,
+        _time_grid,
+        _surface_values,
+        cmap="coolwarm",
+        vmin=_response_min,
+        vmax=_response_max,
+        linewidth=0,
+        antialiased=True,
+        rcount=_surface_values.shape[0],
+        ccount=_surface_values.shape[1],
+    )
+
+    _ax.set_xlabel(r"$x$", fontsize=14)
+    _ax.set_ylabel(r"$t \; [\mathrm{year}]$", fontsize=14)
+    _ax.set_zlabel(r"$G_T(x,t) \; [\mathrm{K}\,\mathrm{year}^{-1}]$", fontsize=14)
+    _ax.set_xlim(response_latitude.min(), response_latitude.max())
+    _ax.set_ylim(response_time_years.min(), response_time_years.max())
+    _ax.view_init(elev=28, azim=45)
+    _fig.colorbar(
+        _surface,
+        ax=_ax,
+        shrink=0.65,
+        pad=0.12,
+        label=r"$G_T(x,t) \; [\mathrm{K}\,\mathrm{year}^{-1}]$",
+    )
+    _fig.tight_layout()
+    _fig
+    #_fig.savefig("../figures/response_green_function_mu1.png", dpi=400)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ### Tipping Points
+
+    This sweep repeats the KDMD calculation for several stochastic runs and is
+    memory intensive. The single-run Koopman objects from the previous section
+    (`X_snap`, `Y_snap`, `scaled_data`, `kdmd`, `tsvd`, `spectrum`, and
+    `phi_vals`) are not needed below and can be safely removed before running
+    the sweep.
+    """)
     return
 
 
 @app.cell
 def _():
+    import gc as _gc
+
+    # The tipping sweep below rebuilds KDMD objects for five datasets. Drop the
+    # large single-run Koopman objects before starting the sweep.
+    for _name in (
+        "X_snap",
+        "Y_snap",
+        "scaled_data",
+        "kdmd",
+        "tsvd",
+        "spectrum",
+        "phi_vals",
+    ):
+        globals().pop(_name, None)
+    _gc.collect()
     return
 
 
 @app.cell
-def _():
-    return
+def _(
+    GaussianKernel,
+    KernelDMD,
+    KoopmanSpectrumKDMD,
+    TSVDRegularizer,
+    YEAR,
+    data_dir,
+    make_snapshots,
+    n_snapshots_training,
+    np,
+    pdist,
+    xr,
+):
+    import gc as _gc
+
+    _tipping_dataset_specs = (
+        (1.00, "new_stochastic_warm_mu1.nc"),
+        (0.99, "new_stochastic_warm_mu0p99.nc"),
+        (0.98, "new_stochastic_warm_mu0p98.nc"),
+        (0.975, "new_stochastic_warm_mu0p975.nc"),
+        (0.972, "new_stochastic_warm_mu0p972.nc"),
+    )
+    _tipping_rng_seed = 0
+    _tipping_rel_threshold_svd_temporary = 1e-3
+    _tipping_rel_threshold_svd = 5e-3
+    _tipping_n_eigenvalues = 10
+    _tipping_transient_years = 500.0
+
+    def _tipping_scaled_positive_temperature(_dataset):
+        # Mirror the single-dataset Koopman preprocessing: use the northern
+        # hemisphere, remove the temporal mean, and apply quadrature weights so
+        # Euclidean distances approximate the weighted latitude norm.
+        _latitude_condition = _dataset["latitude"] >= 0
+        _sliced_dataset = _dataset.where(cond=_latitude_condition, drop=True)
+        _space_coord = np.asarray(_sliced_dataset["latitude"].values, dtype=float)
+        _temperature = np.asarray(_sliced_dataset["temperature"].values, dtype=float)
+
+        _x_grid = np.asarray(_space_coord, dtype=float)
+        _x_min = _x_grid.min()
+        _x_max = _x_grid.max()
+        if np.isclose(_x_max, _x_min):
+            _x_grid = np.linspace(0.0, 1.0, _temperature.shape[1])
+        else:
+            _x_grid = (_x_grid - _x_min) / (_x_max - _x_min)
+
+        _mean_field = _temperature.mean(axis=0)
+        _centered_data = _temperature - _mean_field[None, :]
+
+        _dx_weight = np.empty_like(_x_grid)
+        if _x_grid.size < 2:
+            _dx_weight[...] = 1.0
+        else:
+            _dx_weight[0] = 0.5 * (_x_grid[1] - _x_grid[0])
+            _dx_weight[-1] = 0.5 * (_x_grid[-1] - _x_grid[-2])
+            if _x_grid.size > 2:
+                _dx_weight[1:-1] = 0.5 * (_x_grid[2:] - _x_grid[:-2])
+
+        _cos_weight = np.cos(0.5 * np.pi * _x_grid)
+        _kernel_weight = np.clip(_cos_weight * _dx_weight, a_min=0.0, a_max=None)
+        return _centered_data * np.sqrt(_kernel_weight)[None, :]
+
+    def _tipping_koopman_eigenvalues(_dataset_path, _dataset_index):
+        # Load one dataset at a time, discard the same initial transient used in
+        # the single-dataset KDMD analysis, and keep only the scaled trajectory.
+        # Closing the xarray dataset early helps keep memory bounded.
+        _dataset = xr.open_dataset(_dataset_path)
+        try:
+            _mu_value = float(_dataset.attrs["param_mu"])
+            _dt_value = float(_dataset.attrs["stochastic_dt"])
+            _asymptotic_dataset = _dataset.where(
+                cond=_dataset["time"] > _tipping_transient_years * YEAR,
+                drop=True,
+            )
+            _scaled_data = _tipping_scaled_positive_temperature(_asymptotic_dataset)
+        finally:
+            _dataset.close()
+
+        _x_snap, _y_snap, _dt_eff_value = make_snapshots(_scaled_data, dt=_dt_value)
+        _n_train = min(int(n_snapshots_training), _x_snap.shape[0])
+
+        # Use a deterministic but distinct subsample for each mu value. The
+        # kernel matrices scale quadratically with _n_train, so this is the
+        # main memory control knob for the sweep.
+        _rng = np.random.default_rng(_tipping_rng_seed + _dataset_index)
+        _idx = _rng.choice(_x_snap.shape[0], size=_n_train, replace=False)
+        _x_snap = _x_snap[_idx]
+        _y_snap = _y_snap[_idx]
+
+        # Fit KDMD using the same median-distance kernel bandwidth and TSVD
+        # thresholds as the single-dataset analysis above.
+        _sigma_median = float(np.median(pdist(_scaled_data[_idx], metric="euclidean")))
+        _kdmd = KernelDMD(kernel=GaussianKernel(sigma=_sigma_median))
+        _kdmd.fit_snapshots(X=_x_snap, Y=_y_snap)
+
+        _tsvd = TSVDRegularizer()
+        _tsvd.factorize(
+            _kdmd.G,
+            method="eigsh",
+            rel_threshold=_tipping_rel_threshold_svd_temporary,
+        )
+        _kr, _ur, _sr = _tsvd.solve_from_factorization(
+            _kdmd.A,
+            _tipping_rel_threshold_svd,
+        )
+        _spectrum = KoopmanSpectrumKDMD.from_koopman_matrix(
+            _kr,
+            kernel=_kdmd.kernel,
+            reference_data=_kdmd.reference_data,
+            U_r=_ur,
+            S_r=_sr,
+        )
+        _eigs_ct = _spectrum.continuous_time_eigenvalues(_dt_eff_value)
+
+        # Keep the static mode in the evaluation output. Plotting cells can
+        # choose to skip it without forcing this expensive sweep to rerun.
+        _leading_eigs = _eigs_ct[:_tipping_n_eigenvalues]
+        if _leading_eigs.size < _tipping_n_eigenvalues:
+            _leading_eigs = np.pad(
+                _leading_eigs,
+                (0, _tipping_n_eigenvalues - _leading_eigs.size),
+                constant_values=np.nan + 0j,
+            )
+        _leading_eigs = _leading_eigs.copy()
+
+        del (
+            _scaled_data,
+            _x_snap,
+            _y_snap,
+            _idx,
+            _kdmd,
+            _tsvd,
+            _kr,
+            _ur,
+            _sr,
+            _spectrum,
+            _eigs_ct,
+        )
+        _gc.collect()
+        return _mu_value, _leading_eigs
+
+    # Process datasets sequentially so each KDMD fit can release memory before
+    # the next mu value is loaded.
+    _tipping_records = []
+    for _dataset_index, (_expected_mu, _filename) in enumerate(_tipping_dataset_specs):
+        _tipping_records.append(
+            _tipping_koopman_eigenvalues(data_dir / _filename, _dataset_index)
+        )
+        _gc.collect()
+    _tipping_records = sorted(_tipping_records, key=lambda _record: _record[0])
+
+    tipping_mu_values = np.asarray([_record[0] for _record in _tipping_records], dtype=float)
+    tipping_eigenvalues = np.vstack([_record[1] for _record in _tipping_records])
+    return tipping_eigenvalues, tipping_mu_values
 
 
 @app.cell
-def _():
-    return
+def _(DAY, YEAR, np, plt, tipping_eigenvalues, tipping_mu_values):
+    # Keep the raw KDMD ordering available, but plot a tracked copy. Manual
+    # inspection shows that phi_5 at mu=0.975 continues as raw phi_6 at
+    # mu=0.972, so relabel only that endpoint in the displayed branches.
+    tipping_tracked_eigenvalues = tipping_eigenvalues.copy()
+    _mode_swap_row_indices = np.flatnonzero(np.isclose(tipping_mu_values, 0.972))
+    for _mode_swap_row in _mode_swap_row_indices:
+        tipping_tracked_eigenvalues[_mode_swap_row, 5] = tipping_eigenvalues[
+            _mode_swap_row,
+            6,
+        ]
+        tipping_tracked_eigenvalues[_mode_swap_row, 6] = tipping_eigenvalues[
+            _mode_swap_row,
+            5,
+        ]
+
+    # Column 0 is the static mode. Plot the first six non-static modes.
+    _selected_eigenvalue_indices = (1, 2, 3, 4, 5)
+    tipping_selected_eigenvalues = tipping_tracked_eigenvalues[
+        :,
+        _selected_eigenvalue_indices,
+    ]
+    tipping_selected_eigenvalues_per_day = tipping_selected_eigenvalues.real * DAY
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tipping_selected_timescales_months = np.abs(
+            1.0 / tipping_selected_eigenvalues.real
+        ) / YEAR * 12.0
+    tipping_selected_timescales_months = np.where(
+        np.isfinite(tipping_selected_timescales_months),
+        tipping_selected_timescales_months,
+        np.nan,
+    )
+
+    # The first panel shows decay rates, while the second shows the equivalent
+    # timescales in months.
+    tipping_spectrum_fig, (_tipping_eigs_ax, _tipping_timescale_ax) = plt.subplots(
+        nrows=2,
+        ncols=1,
+        figsize=(8, 7),
+        sharex=True,
+    )
+    for _plot_column, _eigenvalue_index in enumerate(_selected_eigenvalue_indices):
+        _label = rf"$\lambda_{{{_eigenvalue_index}}}$"
+        _tipping_eigs_ax.plot(
+            tipping_mu_values,
+            tipping_selected_eigenvalues_per_day[:, _plot_column],
+            marker="o",
+            label=_label,
+        )
+        _tipping_timescale_ax.plot(
+            tipping_mu_values,
+            tipping_selected_timescales_months[:, _plot_column],
+            marker="o",
+            label=_label,
+        )
+
+    for _ax in (_tipping_eigs_ax, _tipping_timescale_ax):
+        _ax.set_xlabel(r"$\mu$", size=16)
+        _ax.set_xlim(float(tipping_mu_values.max()), float(tipping_mu_values.min()))
+        _ax.grid(alpha=0.3, linestyle="--")
 
 
-@app.cell
-def _():
+    _tipping_handles, _tipping_labels = _tipping_eigs_ax.get_legend_handles_labels()
+    tipping_spectrum_fig.legend(
+        _tipping_handles,
+        _tipping_labels,
+        loc="center left",
+        bbox_to_anchor=(0.85, 0.5),
+        fontsize=16
+    )
+
+    _tipping_eigs_ax.set_ylabel(r"$\mathrm{Re}\,\lambda$ [day$^{-1}$]", size=16)
+    _tipping_timescale_ax.set_ylabel(r"$\tau$ [months]", size=16)
+    tipping_spectrum_fig.tight_layout(rect=(0.0, 0.0, 0.84, 1.0))
+    tipping_spectrum_fig.savefig("../figures/tipping_eigenvalues.png",dpi=400)
     return
 
 
