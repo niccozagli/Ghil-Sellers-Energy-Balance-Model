@@ -434,16 +434,18 @@ def _(mo):
 def _():
     from scipy.spatial.distance import pdist
 
-    from koopman_response.algorithms import GaussianKernel, KernelDMD
+    from koopman_response.algorithms import KernelDMD, WeightedGaussianKernel
     from koopman_response import KoopmanSpectrumKDMD
+    from koopman_response.utils import cosine_trapezoid_weights
     from koopman_response.utils.preprocessing import make_snapshots
     from koopman_response.algorithms.regularization import TSVDRegularizer
 
     return (
-        GaussianKernel,
         KernelDMD,
         KoopmanSpectrumKDMD,
         TSVDRegularizer,
+        WeightedGaussianKernel,
+        cosine_trapezoid_weights,
         make_snapshots,
         pdist,
     )
@@ -465,73 +467,73 @@ def _(asymptotic_warm_ds, np):
 
 
 @app.cell
-def _(X, dt, make_snapshots, n_snapshots_training, np, rng, space_coord):
+def _(
+    X,
+    cosine_trapezoid_weights,
+    dt,
+    make_snapshots,
+    n_snapshots_training,
+    rng,
+    space_coord,
+):
     # Pre-processing
     # 1. We target fluctuations: we remove the temporal mean at each point
-    # 2. We apply a quadrature-aware rescaling, the scalar product has cos(pi/2 x)
-
-    ######## QUADRATURE-AWARE RESCALING #########
-    # Build a normalized spatial grid in [0, 1]
-    _x_grid = np.asarray(space_coord, dtype=float)
-
-    _x_min = _x_grid.min()
-    _x_max = _x_grid.max()
-    if np.isclose(_x_max, _x_min):
-        _x_grid = np.linspace(0.0, 1.0, X.shape[1])
-    else:
-        _x_grid = (_x_grid - _x_min) / (_x_max - _x_min)
+    # 2. We use a weighted kernel
 
     # Remove the temporal mean at each grid point
     mean_field = X.mean(axis=0)
     centered_data = X - mean_field[None, :]
 
-    # Use trapezoidal quadrature weights so the kernel metric approximates
-    # the weighted L2 norm with weight cos(pi x / 2).
-    dx_weight = np.empty_like(_x_grid)
-    if _x_grid.size < 2:
-        dx_weight[...] = 1.0
-    else:
-        dx_weight[0] = 0.5 * (_x_grid[1] - _x_grid[0])
-        dx_weight[-1] = 0.5 * (_x_grid[-1] - _x_grid[-2])
-        if _x_grid.size > 2:
-            dx_weight[1:-1] = 0.5 * (_x_grid[2:] - _x_grid[:-2])
+    # Trapezoidal quadrature weights for the weighted kernel metric.
+    kernel_weight = cosine_trapezoid_weights(space_coord, n_features=X.shape[1])
 
-    cos_weight = np.cos(0.5 * np.pi * _x_grid)
-    kernel_weight = np.clip(cos_weight * dx_weight, a_min=0.0, a_max=None)
-    scaled_data = centered_data * np.sqrt(kernel_weight)[None, :]
-
-    #########################################
     # Snapshot data and sub-sampling
-    X_snap, Y_snap, dt_eff = make_snapshots(scaled_data, dt=dt)
+    X_snap, Y_snap, dt_eff = make_snapshots(centered_data, dt=dt)
     n_train = min(n_snapshots_training, X_snap.shape[0])
     idx = rng.choice(X_snap.shape[0], size=n_train, replace=False)
     X_snap = X_snap[idx]
     Y_snap = Y_snap[idx]
-    return X_snap, Y_snap, centered_data, dt_eff, idx, scaled_data
+    return X_snap, Y_snap, centered_data, dt_eff, idx, kernel_weight
 
 
 @app.cell
 def _(
-    GaussianKernel,
     KernelDMD,
     TSVDRegularizer,
+    WeightedGaussianKernel,
     X_snap,
     Y_snap,
+    centered_data,
     idx,
+    kernel_weight,
     np,
     pdist,
-    scaled_data,
 ):
     # Kernel DMD algorithm
     rel_threshold_svd_temporary = 1e-3
 
-    sigma_median = float(np.median(pdist(scaled_data[idx], metric="euclidean")))
+    weighted_for_bandwidth = centered_data[idx] * np.sqrt(kernel_weight)[None, :]
+    sigma_median = float(np.median(pdist(weighted_for_bandwidth, metric="euclidean")))
 
-    kdmd = KernelDMD(kernel=GaussianKernel(sigma=sigma_median))
+    kdmd = KernelDMD(
+        kernel=WeightedGaussianKernel(
+            sigma=sigma_median,
+            weights=kernel_weight,
+        )
+    )
     kdmd.fit_snapshots(X=X_snap, Y=Y_snap)
 
     tsvd = TSVDRegularizer()
-    tsvd.factorize(kdmd.G, method="eigsh", rel_threshold=rel_threshold_svd_temporary)
+    # Kxx from a symmetric kernel is already symmetric, so symmetrize=False avoids
+    # a full-size 0.5*(G + G.T) copy (~7 GB at N=30k). Free G right after
+    # factorizing: it is not referenced anywhere else.
+    tsvd.factorize(
+        kdmd.G,
+        method="eigsh",
+        symmetrize=False,
+        rel_threshold=rel_threshold_svd_temporary,
+    )
+    kdmd.G = None
     return kdmd, tsvd
 
 
@@ -555,6 +557,9 @@ def _(KoopmanSpectrumKDMD, dt_eff, kdmd, tsvd):
         kdmd.A,
         rel_threshold_svd
     )
+    # A is not used again; free the last full-size Gram matrix (~7 GB at N=30k)
+    # so the response section downstream has headroom.
+    kdmd.A = None
     spectrum = KoopmanSpectrumKDMD.from_koopman_matrix(
         Kr,
         kernel=kdmd.kernel,
@@ -582,9 +587,9 @@ def _(YEAR, eigs_ct, plt):
 
 
 @app.cell
-def _(scaled_data, spectrum):
+def _(centered_data, spectrum):
     # Get the eigenfunctions evaluated on the data
-    phi_vals = spectrum.evaluate_eigenfunctions(scaled_data,batch_size=5_000)
+    phi_vals = spectrum.evaluate_eigenfunctions(centered_data,batch_size=5_000)
     return (phi_vals,)
 
 
@@ -746,6 +751,8 @@ def _(
     tsvd,
     warm_ds,
 ):
+    modes_to_show = (1, 5)
+
     _mode_observables_train = centered_data[:-1, :][idx]
     if _mode_observables_train.shape[0] != X_snap.shape[0]:
         raise ValueError("Local observables are not aligned with the KDMD training snapshots.")
@@ -846,7 +853,7 @@ def _(
 
     _mode_indices = tuple(
         _mode_index
-        for _mode_index in (1, 6)
+        for _mode_index in modes_to_show
         if _mode_index < koopman_mode_matrix.shape[1]
     )
     if not _mode_indices:
@@ -1215,7 +1222,7 @@ def _(mo):
 
 @app.cell
 def _(data_dir, xr):
-    response_numerical = xr.open_dataset(data_dir / "response_co2_mu1.nc")
+    response_numerical = xr.open_dataset(data_dir / "response_mu_mu1.nc")
     response_numerical
     return (response_numerical,)
 
@@ -1271,8 +1278,293 @@ def _(DAY, YEAR, np, plt, response_numerical):
         label=r"$G_T(x,t) \; [\mathrm{K}\,\mathrm{day}^{-1}]$",
     )
     _fig.tight_layout()
+    #_fig.savefig("../figures/response_green_function_co2_mu1.png", dpi=400)
     _fig
-    _fig.savefig("../figures/response_green_function_mu1.png", dpi=400)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Reconstructing the Response Function
+
+    We reconstruct the numerical CO$_2$ Green's function from the unperturbed
+    KDMD spectrum via the fluctuation-dissipation route. The $m_1$ perturbation
+    enters only the outgoing-longwave term
+    $\mathrm{OLR} = \sigma T^4\,(1 - m_1 \tanh(c_3 T^6))$ and lives in the
+    explicit reaction operator, so the phase-space perturbation direction is
+    diagonal (local per grid point):
+    $$
+    X(T)_i = \frac{\partial (\text{reaction}_i)}{\partial m_1}
+           = \frac{\sigma\,T_i^4\,\tanh(c_3 T_i^6)}{C(x_i)} ,
+    $$
+    with $C(x_i)$ the local heat capacity. Because the KDMD data are only
+    centered (not scaled), no rescaling is needed and the reconstruction is in
+    physical units.
+    """)
+    return
+
+
+@app.cell
+def _(X, build_ivp_operator_from_dataset, np, space_coord, warm_ds):
+    # Diagonal m1-perturbation direction X(T)_i = sig T_i^4 tanh(c3 T_i^6) / C(x_i).
+    # Evaluated on the RAW (physical) temperature X, since X(T) is nonlinear in T.
+    _response_operator = build_ivp_operator_from_dataset(warm_ds)
+    _response_params = _response_operator.params
+
+    # Align the heat capacity C(x) onto the positive-latitude KDMD grid.
+    _hc_x = np.asarray(_response_operator.empirical_fields.x, dtype=float)
+    _hc = np.asarray(_response_operator.empirical_fields.heat_capacity, dtype=float)
+    _hc_positive_mask = _hc_x >= 0
+    _hc_x_positive = _hc_x[_hc_positive_mask]
+    _hc_positive = _hc[_hc_positive_mask]
+    _hc_sorter = np.argsort(_hc_x_positive)
+    _hc_x_positive = _hc_x_positive[_hc_sorter]
+    _hc_positive = _hc_positive[_hc_sorter]
+    if _hc_x_positive.shape == space_coord.shape and np.allclose(_hc_x_positive, space_coord):
+        heat_capacity_on_grid = _hc_positive
+    else:
+        heat_capacity_on_grid = np.interp(space_coord, _hc_x_positive, _hc_positive)
+
+    perturbation_field = (
+        _response_params.sig
+        * X**4
+        * np.tanh(_response_params.c3 * X**6)
+        / heat_capacity_on_grid[None, :]
+    )
+    if perturbation_field.shape != X.shape:
+        raise ValueError("Perturbation field shape does not match the temperature data.")
+    if not np.isfinite(perturbation_field).all():
+        raise ValueError("Perturbation field contains non-finite values.")
+    return (perturbation_field,)
+
+
+@app.cell
+def _(G_phi, centered_data, np, perturbation_field, spectrum):
+    # Response coefficients Gamma = G_phi^+ Delta with the full spatial perturbation
+    # vector field. The kernel gradient is translation-invariant, so the centered
+    # trajectory coordinates are used with the perturbation evaluated at raw T.
+    _response_target_samples = 30_000
+    _response_stride = max(1, centered_data.shape[0] // _response_target_samples)
+    _response_trajectory = centered_data[::_response_stride]
+    _response_perturbation = perturbation_field[::_response_stride]
+    if _response_trajectory.shape != _response_perturbation.shape:
+        raise ValueError("Response trajectory and perturbation field are misaligned.")
+
+    Gamma = spectrum.response_coefficients_from_trajectory(
+        trajectories=_response_trajectory,
+        X_values=_response_perturbation,
+        G_phi=G_phi,
+        # delta_from_trajectory now contracts X·∇k via kernel.grad_x_dot, so the
+        # per-batch cost is a (batch, n_ref) matrix (~1 GB here) rather than the
+        # old (batch, n_ref, dim) gradient tensor. batch_size is no longer the
+        # memory bottleneck.
+        batch_size=5_000,
+        show_progress=False,
+    )
+    if not np.isfinite(Gamma).all():
+        raise ValueError("Response coefficients contain non-finite values.")
+    return (Gamma,)
+
+
+@app.cell
+def _(
+    G_phi,
+    Gamma,
+    centered_data,
+    eigs_ct,
+    idx,
+    np,
+    response_numerical,
+    spectrum,
+    tsvd,
+):
+    # Per-latitude Green's function G_i(t) = C_{T_i, Gamma}(t). The numerical impulse
+    # is applied during the first integrator step, so the numerical response saved at
+    # time t is the true response at lag (t - dt): the perturbation only manifests one
+    # step after t=0, hence G_num(t) ~ C(t - dt). Evaluate the KDMD correlation on that
+    # shifted lag grid so the two are compared at equal physical lag.
+    _dt_response = float(response_numerical.attrs["stochastic_dt"])
+    response_lags = np.asarray(response_numerical["time"].values, dtype=float) 
+    response_local_observables_train = centered_data[:-1, :][idx]
+
+    _response_kdmd_columns = []
+    for _response_latitude_index in range(response_local_observables_train.shape[1]):
+        _response_modes = spectrum.koopman_modes(
+            response_local_observables_train[:, _response_latitude_index],
+            U_r=tsvd.Ur,
+            S_r=tsvd.Sr,
+        )
+        _response_greens = spectrum.correlation_function_continuous(
+            G_phi=G_phi,
+            coeff_f=_response_modes,
+            coeff_g=Gamma,
+            eigenvalues=eigs_ct,
+        )
+        _response_kdmd_columns.append(_response_greens(response_lags))
+
+    G_kdmd = np.stack(_response_kdmd_columns, axis=1).real
+    if not np.isfinite(G_kdmd).all():
+        raise ValueError("KDMD Green's function contains non-finite values.")
+    return (G_kdmd,)
+
+
+@app.cell
+def _(DAY, G_kdmd, YEAR, np, plt, response_numerical, space_coord):
+    # Compare the KDMD reconstruction against the numerical Green's function on the
+    # full globe. Each panel is rendered exactly like the standalone numerical plot
+    # above (full mesh, coolwarm, own min/max) so the "numerical" panel is identical
+    # to it. The KDMD analysis lives on the positive latitudes; the model is
+    # north/south symmetric, so G(x) = G(|x|) mirrors it onto the southern hemisphere.
+
+    # Numerical field on its native full-globe grid, sorted by latitude.
+    _num_latitude = np.asarray(response_numerical["latitude"].values, dtype=float)
+    _num_greens = np.asarray(
+        response_numerical["green_function_temperature"].values, dtype=float
+    )
+    _num_sorter = np.argsort(_num_latitude)
+    full_latitude = _num_latitude[_num_sorter]
+    G_numerical = _num_greens[:, _num_sorter]
+
+    # Positive-latitude KDMD field, sorted so np.interp sees increasing x.
+    _pos_sorter = np.argsort(space_coord)
+    _pos_latitude = space_coord[_pos_sorter]
+    _G_kdmd_pos = G_kdmd[:, _pos_sorter]
+
+    # Mirror onto the full latitude grid: the value at latitude y is the
+    # reconstruction evaluated at |y|. Result shares G_numerical's exact grid.
+    G_kdmd_full = np.vstack(
+        [
+            np.interp(np.abs(full_latitude), _pos_latitude, _G_kdmd_pos[_t])
+            for _t in range(_G_kdmd_pos.shape[0])
+        ]
+    )
+    if G_numerical.shape != G_kdmd_full.shape:
+        raise ValueError("Numerical and KDMD Green's functions have mismatched shapes.")
+
+    # Use the true response lag tau = t - dt: the numerical impulse is applied during
+    # the first integrator step, so the response saved at time t is really R(t - dt),
+    # and the KDMD reconstruction was evaluated on the same shifted grid. The first
+    # sample (t=0, tau=-dt) is the shared unperturbed initial condition -- exactly 0 by
+    # construction -- so it is dropped; the comparison starts at the first real step.
+    _dt_response = float(response_numerical.attrs["stochastic_dt"])
+    full_time_years = (
+        np.asarray(response_numerical["time"].values, dtype=float) - _dt_response
+    ) / YEAR
+    full_time_years = full_time_years[1:]
+    G_numerical = G_numerical[1:]
+    G_kdmd_full = G_kdmd_full[:-1]
+
+    # Same mesh, stride and units (K/day) as the standalone numerical plot.
+    _plot_stride = max(1, G_numerical.shape[0] // 300)
+    _latitude_grid, _time_grid = np.meshgrid(
+        full_latitude,
+        full_time_years[::_plot_stride],
+    )
+
+    _numerical_surface = G_numerical[::_plot_stride, :] * DAY
+    _kdmd_surface = G_kdmd_full[::_plot_stride, :] * DAY
+    _difference_surface = _kdmd_surface - _numerical_surface
+
+    # Global least-squares amplitude ratio (validation only; surfaces not rescaled).
+    _global_ratio = float(
+        np.sum(G_kdmd_full * G_numerical) / np.sum(G_kdmd_full**2)
+    )
+
+    # Numerical and KDMD panels: own min/max, so colorbar and z-axis span the same
+    # interval and the numerical panel matches the standalone plot. Difference panel:
+    # symmetric about zero, with a robust limit (99th percentile of |difference|) so
+    # the localized early-time spike at the poles -- a sharp feature the smooth KDMD
+    # reconstruction cannot resolve -- does not stretch the axis past the typical,
+    # much smaller difference.
+    _diff_lim = float(np.percentile(np.abs(_difference_surface), 99.0))
+    if _diff_lim <= 0.0:
+        _diff_lim = float(np.nanmax(np.abs(_difference_surface))) or 1.0
+
+    _response_fig = plt.figure(figsize=(16, 5))
+    _response_surface_specs = (
+        (
+            r"$G_T(x,t)$ numerical",
+            _numerical_surface,
+            float(np.nanmin(_numerical_surface)),
+            float(np.nanmax(_numerical_surface)),
+        ),
+        (
+            r"$G_T(x,t)$ KDMD",
+            _kdmd_surface,
+            float(np.nanmin(_kdmd_surface)),
+            float(np.nanmax(_kdmd_surface)),
+        ),
+        # Clip the plotted values to the robust limit so the pole spike caps flat at
+        # the top of the box instead of shooting far above it as a saturated red wall.
+        (r"Difference", np.clip(_difference_surface, -_diff_lim, _diff_lim), -_diff_lim, _diff_lim),
+    )
+
+    for _panel_index, (_title, _values, _vmin, _vmax) in enumerate(
+        _response_surface_specs, start=1
+    ):
+        print(_panel_index)
+        _ax = _response_fig.add_subplot(1, 3, _panel_index, projection="3d")
+        _surface = _ax.plot_surface(
+            _latitude_grid,
+            _time_grid,
+            _values,
+            cmap="coolwarm",
+            vmin=_vmin,
+            vmax=_vmax,
+            linewidth=0,
+            antialiased=True,
+            rcount=_values.shape[0],
+            ccount=_values.shape[1],
+        )
+        _ax.set_title(_title, fontsize=14)
+        _ax.set_xlabel(r"$x$", fontsize=11)
+        _ax.set_ylabel(r"$t \; [\mathrm{year}]$", fontsize=11)
+        if _panel_index == 1:
+            _ax.set_zlabel(r"$G_T \; [\mathrm{K}\,\mathrm{day}^{-1}]$", fontsize=11)
+
+        _ax.set_xlim(full_latitude.min(), full_latitude.max())
+        _ax.set_ylim(full_time_years.min(), full_time_years.max())
+        _ax.set_zlim(_vmin, _vmax)
+        _ax.view_init(elev=28, azim=45)
+        _response_fig.colorbar(_surface, ax=_ax, shrink=0.58, pad=0.12)
+
+
+    _response_fig.tight_layout()
+    _response_fig
+    #_response_fig.savefig("../figures/response_reconstruction_co2_mu1.png", dpi=400)
+    return G_kdmd_full, G_numerical, full_latitude, full_time_years
+
+
+@app.cell
+def _(DAY, G_kdmd_full, G_numerical, full_latitude, full_time_years, plt):
+    # Spatial profiles G(x) of the numerical response and the KDMD reconstruction at
+    # a single time. The spurious t=0 sample was already dropped in the comparison
+    # cell, so index 0 is the first saved step (t=Dt) and G_numerical / G_kdmd_full
+    # are aligned at the same physical time -- use the same index for both (no shift).
+    # Bump _profile_t_index for a later slice.
+    _profile_t_index = 10
+    _profile_time = float(full_time_years[_profile_t_index])
+
+    _num_profile = G_numerical[_profile_t_index, :] * DAY
+    _kdmd_profile = G_kdmd_full[_profile_t_index, :] * DAY
+
+    _profile_fig, _profile_ax = plt.subplots(figsize=(8, 5))
+    _profile_ax.plot(full_latitude, _num_profile, color="black", lw=2, label="numerical")
+    _profile_ax.plot(
+        full_latitude, _kdmd_profile, color="crimson", lw=2, ls="--", label="KDMD"
+    )
+    _profile_ax.set_xlabel(r"$x$", fontsize=14)
+    _profile_ax.set_ylabel(r"$G_T(x,t) \; [\mathrm{K}\,\mathrm{day}^{-1}]$", fontsize=14)
+    _profile_ax.set_title(
+        rf"Response profile at $t = {_profile_time:.2f}$ year", fontsize=14
+    )
+    _profile_ax.set_xlim(full_latitude.min(), full_latitude.max())
+    _profile_ax.set_ylim(bottom = 0, top=0.2)
+    _profile_ax.legend(frameon=False, fontsize=12)
+    _profile_ax.grid(True, alpha=0.3)
+    _profile_fig.tight_layout()
+    _profile_fig
     return
 
 
@@ -1283,7 +1575,7 @@ def _(mo):
 
     This sweep repeats the KDMD calculation for several stochastic runs and is
     memory intensive. The single-run Koopman objects from the previous section
-    (`X_snap`, `Y_snap`, `scaled_data`, `kdmd`, `tsvd`, `spectrum`, and
+    (`X_snap`, `Y_snap`, `centered_data`, `kernel_weight`, `kdmd`, `tsvd`, `spectrum`, and
     `phi_vals`) are not needed below and can be safely removed before running
     the sweep.
     """)
@@ -1299,7 +1591,8 @@ def _():
     for _name in (
         "X_snap",
         "Y_snap",
-        "scaled_data",
+        "centered_data",
+        "kernel_weight",
         "kdmd",
         "tsvd",
         "spectrum",
@@ -1312,11 +1605,12 @@ def _():
 
 @app.cell
 def _(
-    GaussianKernel,
     KernelDMD,
     KoopmanSpectrumKDMD,
     TSVDRegularizer,
+    WeightedGaussianKernel,
     YEAR,
+    cosine_trapezoid_weights,
     data_dir,
     make_snapshots,
     n_snapshots_training,
@@ -1339,42 +1633,27 @@ def _(
     _tipping_n_eigenvalues = 10
     _tipping_transient_years = 500.0
 
-    def _tipping_scaled_positive_temperature(_dataset):
+    def _tipping_centered_positive_temperature_and_weights(_dataset):
         # Mirror the single-dataset Koopman preprocessing: use the northern
-        # hemisphere, remove the temporal mean, and apply quadrature weights so
-        # Euclidean distances approximate the weighted latitude norm.
+        # hemisphere, remove the temporal mean, and put quadrature weights in
+        # the kernel metric.
         _latitude_condition = _dataset["latitude"] >= 0
         _sliced_dataset = _dataset.where(cond=_latitude_condition, drop=True)
         _space_coord = np.asarray(_sliced_dataset["latitude"].values, dtype=float)
         _temperature = np.asarray(_sliced_dataset["temperature"].values, dtype=float)
 
-        _x_grid = np.asarray(_space_coord, dtype=float)
-        _x_min = _x_grid.min()
-        _x_max = _x_grid.max()
-        if np.isclose(_x_max, _x_min):
-            _x_grid = np.linspace(0.0, 1.0, _temperature.shape[1])
-        else:
-            _x_grid = (_x_grid - _x_min) / (_x_max - _x_min)
-
         _mean_field = _temperature.mean(axis=0)
         _centered_data = _temperature - _mean_field[None, :]
-
-        _dx_weight = np.empty_like(_x_grid)
-        if _x_grid.size < 2:
-            _dx_weight[...] = 1.0
-        else:
-            _dx_weight[0] = 0.5 * (_x_grid[1] - _x_grid[0])
-            _dx_weight[-1] = 0.5 * (_x_grid[-1] - _x_grid[-2])
-            if _x_grid.size > 2:
-                _dx_weight[1:-1] = 0.5 * (_x_grid[2:] - _x_grid[:-2])
-
-        _cos_weight = np.cos(0.5 * np.pi * _x_grid)
-        _kernel_weight = np.clip(_cos_weight * _dx_weight, a_min=0.0, a_max=None)
-        return _centered_data * np.sqrt(_kernel_weight)[None, :]
+        _kernel_weight = cosine_trapezoid_weights(
+            _space_coord,
+            n_features=_temperature.shape[1],
+        )
+        return _centered_data, _kernel_weight
 
     def _tipping_koopman_eigenvalues(_dataset_path, _dataset_index):
         # Load one dataset at a time, discard the same initial transient used in
-        # the single-dataset KDMD analysis, and keep only the scaled trajectory.
+        # the single-dataset KDMD analysis, and keep only centered coordinates
+        # with their spatial kernel weights.
         # Closing the xarray dataset early helps keep memory bounded.
         _dataset = xr.open_dataset(_dataset_path)
         try:
@@ -1394,11 +1673,13 @@ def _(
                 _dt_value,
                 _expected_dt_value,
             )
-            _scaled_data = _tipping_scaled_positive_temperature(_asymptotic_dataset)
+            _centered_data, _kernel_weight = (
+                _tipping_centered_positive_temperature_and_weights(_asymptotic_dataset)
+            )
         finally:
             _dataset.close()
 
-        _x_snap, _y_snap, _dt_eff_value = make_snapshots(_scaled_data, dt=_dt_value)
+        _x_snap, _y_snap, _dt_eff_value = make_snapshots(_centered_data, dt=_dt_value)
         _n_train = min(int(n_snapshots_training), _x_snap.shape[0])
 
         # Use a deterministic but distinct subsample for each mu value. The
@@ -1411,20 +1692,35 @@ def _(
 
         # Fit KDMD using the same median-distance kernel bandwidth and TSVD
         # thresholds as the single-dataset analysis above.
-        _sigma_median = float(np.median(pdist(_scaled_data[_idx], metric="euclidean")))
-        _kdmd = KernelDMD(kernel=GaussianKernel(sigma=_sigma_median))
+        _weighted_for_bandwidth = (
+            _centered_data[_idx] * np.sqrt(_kernel_weight)[None, :]
+        )
+        _sigma_median = float(
+            np.median(pdist(_weighted_for_bandwidth, metric="euclidean"))
+        )
+        _kdmd = KernelDMD(
+            kernel=WeightedGaussianKernel(
+                sigma=_sigma_median,
+                weights=_kernel_weight,
+            )
+        )
         _kdmd.fit_snapshots(X=_x_snap, Y=_y_snap)
 
         _tsvd = TSVDRegularizer()
+        # symmetrize=False: Kxx is already symmetric, avoids a full-size copy.
+        # Free each Gram as soon as it is consumed to cap the per-mu peak.
         _tsvd.factorize(
             _kdmd.G,
             method="eigsh",
+            symmetrize=False,
             rel_threshold=_tipping_rel_threshold_svd_temporary,
         )
+        _kdmd.G = None
         _kr, _ur, _sr = _tsvd.solve_from_factorization(
             _kdmd.A,
             _tipping_rel_threshold_svd,
         )
+        _kdmd.A = None
         _spectrum = KoopmanSpectrumKDMD.from_koopman_matrix(
             _kr,
             kernel=_kdmd.kernel,
@@ -1446,7 +1742,9 @@ def _(
         _leading_eigs = _leading_eigs.copy()
 
         del (
-            _scaled_data,
+            _centered_data,
+            _kernel_weight,
+            _weighted_for_bandwidth,
             _x_snap,
             _y_snap,
             _idx,
