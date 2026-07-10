@@ -133,12 +133,12 @@ def response_time_grid(final_time: float, dt: float, save_every: int) -> np.ndar
 
     current_time = 0.0
     step_count = 0
-    saved_times = [0.0]
+    saved_times = []
     while current_time < final_time:
         step = min(dt, final_time - current_time)
         current_time += step
         step_count += 1
-        if step_count % save_every == 0 or current_time >= final_time:
+        if step_count == 1 or step_count % save_every == 0 or current_time >= final_time:
             saved_times.append(current_time)
     return np.asarray(saved_times, dtype=float)
 
@@ -321,8 +321,8 @@ def run_signed_response(job: ResponseJob) -> ResponseResult:
     current_time = 0.0
     step_count = 0
     y = np.asarray(job.initial_temperature, dtype=float).copy()
-    saved_times = [0.0]
-    saved_temperatures = [y.copy()]
+    saved_times = []
+    saved_temperatures = []
 
     while current_time < job.settings.final_time:
         dt = min(job.stochastic_settings.dt, job.settings.final_time - current_time)
@@ -343,7 +343,11 @@ def run_signed_response(job: ResponseJob) -> ResponseResult:
         step_count += 1
         if not np.all(np.isfinite(y)):
             raise RuntimeError("Response integration produced non-finite temperatures.")
-        if step_count % job.stochastic_settings.save_every == 0 or current_time >= job.settings.final_time:
+        if (
+            step_count == 1
+            or step_count % job.stochastic_settings.save_every == 0
+            or current_time >= job.settings.final_time
+        ):
             saved_times.append(current_time)
             saved_temperatures.append(y.copy())
 
@@ -464,7 +468,10 @@ def response_dataset(
         "response_seed_scheme": "base_seed + sample_index (common random numbers per sign)",
         "mu_plus_first_step": float(params.mu + epsilon / stochastic_settings.dt),
         "mu_minus_first_step": float(params.mu - epsilon / stochastic_settings.dt),
-        "perturbation_note": "mu is perturbed only during the first IMEX step.",
+        "perturbation_note": (
+            "mu is perturbed only during the first IMEX step; the first saved "
+            "response state is the post-step state at dt."
+        ),
         "stationary_estimate_note": "mean over sampled initial conditions",
         "green_function_units_note": (
             "epsilon is interpreted in seconds because the first-step perturbation "

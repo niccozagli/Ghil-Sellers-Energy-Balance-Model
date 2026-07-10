@@ -137,6 +137,15 @@ class ResponseMuScriptTest(unittest.TestCase):
 
         self.assertEqual(estimated, 3 * 5 * 8)
 
+    def test_response_time_grid_records_first_step_before_regular_sampling(self) -> None:
+        time = self.module.response_time_grid(
+            final_time=61.0,
+            dt=1.0,
+            save_every=30,
+        )
+
+        np.testing.assert_allclose(time, np.array([1.0, 30.0, 60.0, 61.0]))
+
     def test_select_evenly_spaced_post_transient_samples_filters_and_samples(self) -> None:
         time = np.arange(6.0)
         temperature = np.arange(18.0).reshape(6, 3)
@@ -226,7 +235,7 @@ class ResponseMuScriptTest(unittest.TestCase):
                 workers=1,
             )
 
-        self.assertEqual(time.shape, (3,))
+        self.assertEqual(time.shape, (2,))
         np.testing.assert_allclose(plus_mean, 1.0)
         np.testing.assert_allclose(minus_mean, -1.0)
         self.assertEqual(
@@ -250,9 +259,9 @@ class ResponseMuScriptTest(unittest.TestCase):
 
         result = self.module.run_signed_response(job)
 
-        self.assertEqual(result.temperature.shape, (3, latitude.size))
+        self.assertEqual(result.temperature.shape, (2, latitude.size))
         self.assertTrue(np.isfinite(result.temperature).all())
-        np.testing.assert_allclose(result.time, np.array([0.0, 1.0e3, 2.0e3]))
+        np.testing.assert_allclose(result.time, np.array([1.0e3, 2.0e3]))
 
     def test_run_signed_response_uses_perturbed_mu_only_on_first_step(self) -> None:
         class FakeDiffusionOperator:
@@ -291,7 +300,6 @@ class ResponseMuScriptTest(unittest.TestCase):
 
         expected = np.array(
             [
-                [0.0, 0.0],
                 [0.7, 0.7],
                 [1.2, 1.2],
             ]

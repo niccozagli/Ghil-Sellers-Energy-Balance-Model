@@ -1222,7 +1222,7 @@ def _(mo):
 
 @app.cell
 def _(data_dir, xr):
-    response_numerical = xr.open_dataset(data_dir / "response_mu_mu1.nc")
+    response_numerical = xr.open_dataset(data_dir / "response_co2_mu1.nc")
     response_numerical
     return (response_numerical,)
 
@@ -1449,11 +1449,11 @@ def _(DAY, G_kdmd, YEAR, np, plt, response_numerical, space_coord):
     # construction -- so it is dropped; the comparison starts at the first real step.
     _dt_response = float(response_numerical.attrs["stochastic_dt"])
     full_time_years = (
-        np.asarray(response_numerical["time"].values, dtype=float) - _dt_response
-    ) / YEAR
-    full_time_years = full_time_years[1:]
+        np.asarray(response_numerical["time"].values, dtype=float) 
+    )[1:] / YEAR
+
     G_numerical = G_numerical[1:]
-    G_kdmd_full = G_kdmd_full[:-1]
+    G_kdmd_full = G_kdmd_full[1:]
 
     # Same mesh, stride and units (K/day) as the standalone numerical plot.
     _plot_stride = max(1, G_numerical.shape[0] // 300)
@@ -1543,7 +1543,7 @@ def _(DAY, G_kdmd_full, G_numerical, full_latitude, full_time_years, plt):
     # cell, so index 0 is the first saved step (t=Dt) and G_numerical / G_kdmd_full
     # are aligned at the same physical time -- use the same index for both (no shift).
     # Bump _profile_t_index for a later slice.
-    _profile_t_index = 10
+    _profile_t_index = 1
     _profile_time = float(full_time_years[_profile_t_index])
 
     _num_profile = G_numerical[_profile_t_index, :] * DAY
@@ -1560,7 +1560,7 @@ def _(DAY, G_kdmd_full, G_numerical, full_latitude, full_time_years, plt):
         rf"Response profile at $t = {_profile_time:.2f}$ year", fontsize=14
     )
     _profile_ax.set_xlim(full_latitude.min(), full_latitude.max())
-    _profile_ax.set_ylim(bottom = 0, top=0.2)
+    _profile_ax.set_ylim(bottom = 0, top=0.4)
     _profile_ax.legend(frameon=False, fontsize=12)
     _profile_ax.grid(True, alpha=0.3)
     _profile_fig.tight_layout()
