@@ -11,7 +11,10 @@
 
 set -euo pipefail
 
-repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Slurm records the directory from which sbatch was invoked.  Do not derive
+# this from BASH_SOURCE: Slurm may execute relative script paths from its
+# spool directory instead of the submission directory.
+repository_root="${SLURM_SUBMIT_DIR:?Submit this job with sbatch from the repository root.}"
 cd "$repository_root"
 
 # uv's installer places its executable here.  Batch shells may not source
