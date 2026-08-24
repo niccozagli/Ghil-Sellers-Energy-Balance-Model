@@ -1,12 +1,11 @@
 import marimo
 
-__generated_with = "0.24.0"
+__generated_with = "0.23.9"
 app = marimo.App(width="medium")
 
 
 @app.cell
 def _():
-    import cartopy.crs as ccrs
     import marimo as mo
     import matplotlib.pyplot as plt
     import xarray as xr
@@ -40,7 +39,6 @@ def _():
         DAY,
         YEAR,
         build_ivp_operator_from_dataset,
-        ccrs,
         edge_state_albedo_from_dataset,
         edge_state_heat_transfer_from_dataset,
         get_data_dir,
@@ -55,51 +53,6 @@ def _():
         warm_cold_state_heat_transfer_from_dataset,
         xr,
     )
-
-
-@app.cell
-def _(xr):
-    grid = xr.open_dataset("../CONTROL_360ppm_PLA.2000.12.nc")
-    return (grid,)
-
-
-@app.cell
-def _(ccrs, grid, plt):
-    _figure, _axes = plt.subplots(
-        figsize=(10, 4), subplot_kw={"projection": ccrs.PlateCarree()}
-    )
-    ge_T = grid["tas"].mean(dim="lon")
-    ge_T.isel(time=0).plot(
-        ax=_axes,
-        transform=ccrs.PlateCarree(),
-        y="lat",
-    )
-    _axes.coastlines(linewidth=0.7)
-    _axes.set_global()
-    _axes.set_title("Mean 2 m air temperature")
-    return
-
-
-@app.cell
-def _(ccrs, grid, plt):
-    _figure, _axes = plt.subplots(
-        figsize=(10, 4), subplot_kw={"projection": ccrs.PlateCarree()}
-    )
-    grid["tas"].isel(time=-1).plot(
-        ax=_axes,
-        transform=ccrs.PlateCarree(),
-        x="lon",
-        y="lat",
-    )
-    _axes.coastlines(linewidth=0.7)
-    _axes.set_global()
-    _axes.set_title("Mean 2 m air temperature")
-    return
-
-
-@app.cell
-def _():
-    return
 
 
 @app.cell
@@ -234,6 +187,7 @@ def _(global_asymp_temperature_edge, global_asymp_temperature_wc, plt):
     _ax.scatter(global_asymp_temperature_wc["mu"],global_asymp_temperature_wc["warm_state_temperature"])
     _ax.scatter(global_asymp_temperature_edge["mu"],global_asymp_temperature_edge["edge_state_temperature"])
     _ax.grid(alpha=0.4,linestyle='--')
+    _ax.set_xlim(left=0.96,right=0.97)
     plt.show()
     return
 
@@ -255,9 +209,22 @@ def _(mo):
 
 @app.cell
 def _(data_dir, xr):
-    warm_input_filename ="new_stochastic_warm_mu0p972.nc" #"stochastic_warm_state_mu0p97_{5}.nc"
-    warm_ds = xr.open_dataset(data_dir / warm_input_filename)
-    return (warm_ds,)
+    warm_input_filename ="new_stochastic_warm_mu1" #"stochastic_warm_state_mu0p97_{5}.nc"
+    warm_ds = xr.open_dataset(data_dir / (warm_input_filename + ".nc") )
+    return warm_ds, warm_input_filename
+
+
+@app.cell
+def _(data_dir, warm_input_filename, xr):
+    correlation_input_filenames = tuple(
+        warm_input_filename+f"_{{{_index}}}.nc"
+        for _index in range(1, 6)
+    )
+    correlation_warm_datasets = tuple(
+        xr.open_dataset(data_dir / _filename)
+        for _filename in correlation_input_filenames
+    )
+    return (correlation_warm_datasets,)
 
 
 @app.cell
@@ -266,7 +233,7 @@ def _(latitude_weighted_mean, warm_ds):
     eq_T = latitude_weighted_mean(warm_ds, xmin=0, xmax=1/3)
     pole_T = latitude_weighted_mean(warm_ds, xmin=1/3, xmax=1)
     Delta_T = eq_T - pole_T
-    return Delta_T, avg_T
+    return (avg_T,)
 
 
 @app.cell
@@ -299,7 +266,7 @@ def _(YEAR, warm_ds):
     )
     warm_asymptotic_temperature = asymptotic_warm_ds["temperature"].mean(dim="time")
     warm_asymptotic_temperature_std = asymptotic_warm_ds["temperature"].std(dim="time")
-    return asymptotic_warm_ds, condition
+    return (asymptotic_warm_ds,)
 
 
 @app.cell(hide_code=True)
@@ -311,70 +278,144 @@ def _(mo):
 
 
 @app.cell
-def _(Delta_T, avg_T, condition, np):
+def _(YEAR, correlation_warm_datasets, latitude_weighted_mean, np):
     from koopman_response.utils.signal import cross_correlation as _cross_correlation
 
-    avg_T_asymp = avg_T.where(cond=condition,drop=True)
-    Delta_T_asymp = Delta_T.where(cond=condition,drop=True)
+    _transient = 500
+    _stop = 1e10
 
-    # Sampling interval of the SAVED series is stochastic_dt * save_every, not the
-    # raw solver step. Derive it from the time coordinate so save_every is always
-    # accounted for (otherwise correlation/Koopman timescales are too fast by
-    # save_every, e.g. 30x -> months instead of years).
-    dt = float(np.median(np.diff(avg_T_asymp["time"].values)))  # in seconds
-    _expected_dt = (
-        avg_T_asymp.attrs["stochastic_dt"] * avg_T_asymp.attrs["stochastic_save_every"]
-    )
-    assert np.isclose(dt, _expected_dt, rtol=1e-6), (dt, _expected_dt)
+    _corr_avgT_replicates = []
+    _corr_DeltaT_replicates = []
+    dt = None
+    lags_avgT = None
+    lags_DeltaT = None
 
-    obs_avgT = avg_T_asymp["temperature"].values
-    lags_avgT, corr_avgT = _cross_correlation(x=obs_avgT,y=obs_avgT,dt=dt,normalization="biased")
+    for _dataset in correlation_warm_datasets:
+        _condition = (
+            (_dataset["time"] > _transient * YEAR) &
+            (_dataset["time"] < _stop * YEAR)
+        )
+        _avg_T = latitude_weighted_mean(_dataset, xmin=0, xmax=1)
+        _eq_T = latitude_weighted_mean(_dataset, xmin=0, xmax=1 / 3)
+        _pole_T = latitude_weighted_mean(_dataset, xmin=1 / 3, xmax=1)
+        _Delta_T = _eq_T - _pole_T
 
+        _avg_T_asymp = _avg_T.where(cond=_condition, drop=True)
+        _Delta_T_asymp = _Delta_T.where(cond=_condition, drop=True)
 
-    obs_DeltaT = Delta_T_asymp["temperature"].values
-    lags_DeltaT, corr_DeltaT = _cross_correlation(x=obs_DeltaT,y=obs_DeltaT,dt=dt,normalization="biased")
+        # Sampling interval of the SAVED series is stochastic_dt * save_every, not
+        # the raw solver step. Derive it from the time coordinate so save_every is
+        # always accounted for.
+        _dt = float(np.median(np.diff(_avg_T_asymp["time"].values)))  # in seconds
+        _expected_dt = (
+            _avg_T_asymp.attrs["stochastic_dt"] *
+            _avg_T_asymp.attrs["stochastic_save_every"]
+        )
+        assert np.isclose(_dt, _expected_dt, rtol=1e-6), (_dt, _expected_dt)
+
+        _obs_avgT = _avg_T_asymp["temperature"].values
+        _lags_avgT, _corr_avgT = _cross_correlation(
+            x=_obs_avgT,
+            y=_obs_avgT,
+            dt=_dt,
+            normalization="biased",
+        )
+
+        _obs_DeltaT = _Delta_T_asymp["temperature"].values
+        _lags_DeltaT, _corr_DeltaT = _cross_correlation(
+            x=_obs_DeltaT,
+            y=_obs_DeltaT,
+            dt=_dt,
+            normalization="unbiased",
+        )
+
+        if dt is None:
+            dt = _dt
+            lags_avgT = _lags_avgT
+            lags_DeltaT = _lags_DeltaT
+        elif not np.isclose(_dt, dt, rtol=1e-12, atol=0.0):
+            raise ValueError("Correlation replicate sampling intervals do not match.")
+        elif not np.array_equal(_lags_avgT, lags_avgT):
+            raise ValueError("avgT correlation replicate lag grids do not match.")
+        elif not np.array_equal(_lags_DeltaT, lags_DeltaT):
+            raise ValueError("Delta_T correlation replicate lag grids do not match.")
+
+        _corr_avgT_replicates.append(_corr_avgT)
+        _corr_DeltaT_replicates.append(_corr_DeltaT)
+
+    corr_avgT = np.mean(np.stack(_corr_avgT_replicates, axis=0), axis=0)
+    corr_DeltaT = np.mean(np.stack(_corr_DeltaT_replicates, axis=0), axis=0)
     return corr_DeltaT, corr_avgT, dt, lags_DeltaT, lags_avgT
 
 
 @app.cell
-def _(YEAR, asymptotic_warm_ds, dt, np):
+def _(YEAR, correlation_warm_datasets, dt, np):
     from koopman_response.utils.signal import cross_correlation as _cross_correlation
-    _local_corr_lag_window_years = 25.0
+    _transient = 500
+    _stop = 1e10
+    _local_corr_lag_window_years = 20.0
 
-
-    _local_corr_latitude_condition = asymptotic_warm_ds["latitude"] >= 0
-    local_corr_ds = asymptotic_warm_ds.where(cond=_local_corr_latitude_condition, drop=True)
-    local_corr_latitude = local_corr_ds["latitude"].values
-    local_temperature = local_corr_ds["temperature"].values
-
-    if local_temperature.ndim != 2:
-        raise ValueError("Expected temperature data with dimensions (time, latitude).")
-    if local_temperature.shape[0] == 0 or local_temperature.shape[1] == 0:
-        raise ValueError("Cannot compute local correlations from an empty time-latitude slice.")
-    if not np.isfinite(local_temperature).all():
-        raise ValueError("Local temperature data contain non-finite values.")
-
-
-    local_corr_max_lag = min(
-        int(round(_local_corr_lag_window_years * YEAR / dt)),
-        local_temperature.shape[0] - 1,
-    )
-    local_corr_columns = []
+    _local_corr_replicates = []
     local_corr_lags = None
+    local_corr_latitude = None
 
-    for _latitude_index in range(local_temperature.shape[1]):
-        _lags, _corr = _cross_correlation(
-            x=local_temperature[:, _latitude_index],
-            y=local_temperature[:, _latitude_index],
-            dt=dt,
-            max_lag=local_corr_max_lag,
-            normalization="biased",
+    for _dataset in correlation_warm_datasets:
+        _condition = (
+            (_dataset["time"] > _transient * YEAR) &
+            (_dataset["time"] < _stop * YEAR)
         )
-        if local_corr_lags is None:
-            local_corr_lags = _lags
-        local_corr_columns.append(_corr)
+        _asymptotic_dataset = _dataset.where(cond=_condition, drop=True)
+        _local_corr_latitude_condition = _asymptotic_dataset["latitude"] >= 0
+        local_corr_ds = _asymptotic_dataset.where(
+            cond=_local_corr_latitude_condition,
+            drop=True,
+        )
+        _local_corr_latitude = local_corr_ds["latitude"].values
+        local_temperature = local_corr_ds["temperature"].values
 
-    local_corr = np.stack(local_corr_columns, axis=1)
+        if local_temperature.ndim != 2:
+            raise ValueError("Expected temperature data with dimensions (time, latitude).")
+        if local_temperature.shape[0] == 0 or local_temperature.shape[1] == 0:
+            raise ValueError("Cannot compute local correlations from an empty time-latitude slice.")
+        if not np.isfinite(local_temperature).all():
+            raise ValueError("Local temperature data contain non-finite values.")
+
+        local_corr_max_lag = min(
+            int(round(_local_corr_lag_window_years * YEAR / dt)),
+            local_temperature.shape[0] - 1,
+        )
+        local_corr_columns = []
+        _local_corr_lags = None
+
+        for _latitude_index in range(local_temperature.shape[1]):
+            _lags, _corr = _cross_correlation(
+                x=local_temperature[:, _latitude_index],
+                y=local_temperature[:, _latitude_index],
+                dt=dt,
+                max_lag=local_corr_max_lag,
+                normalization="unbiased",
+            )
+            if _local_corr_lags is None:
+                _local_corr_lags = _lags
+            local_corr_columns.append(_corr)
+
+        _local_corr = np.stack(local_corr_columns, axis=1)
+        if local_corr_lags is None:
+            local_corr_lags = _local_corr_lags
+            local_corr_latitude = _local_corr_latitude
+        elif not np.array_equal(_local_corr_lags, local_corr_lags):
+            raise ValueError("Local correlation replicate lag grids do not match.")
+        elif not np.allclose(_local_corr_latitude, local_corr_latitude):
+            raise ValueError("Local correlation replicate latitude grids do not match.")
+        elif _local_corr.shape != _local_corr_replicates[0].shape:
+            raise ValueError("Local correlation replicate shapes do not match.")
+
+        _local_corr_replicates.append(_local_corr)
+
+    local_corr = np.mean(
+        np.stack(_local_corr_replicates, axis=0),
+        axis=0,
+    )
     return local_corr, local_corr_lags, local_corr_latitude
 
 
@@ -410,62 +451,6 @@ def _(YEAR, local_corr, local_corr_lags, local_corr_latitude, np, plt):
     _fig.colorbar(_surface, ax=_ax, shrink=0.65, pad=0.12, label=r"$C_T(x,t)$")
     _fig.tight_layout()
     _fig
-    return
-
-
-@app.cell
-def _():
-    # def limits_with_zero_fraction(ax, zero_fraction=0.15):
-    #       ymin, ymax = ax.get_ylim()
-
-    #       ymax = max(ymax, 0)
-    #       ymin = min(ymin, 0)
-
-    #       above = ymax
-    #       below = -ymin
-
-    #       required_below = zero_fraction / (1 - zero_fraction) * above
-    #       required_above = (1 - zero_fraction) / zero_fraction * below
-
-    #       if below < required_below:
-    #           ymin = -required_below
-    #       if above < required_above:
-    #           ymax = required_above
-
-    #       return ymin, ymax
-
-
-    # def align_zero_yaxis(ax1, ax2, zero_fraction=0.15):
-    #       ax1.set_ylim(*limits_with_zero_fraction(ax1, zero_fraction))
-    #       ax2.set_ylim(*limits_with_zero_fraction(ax2, zero_fraction))
-
-
-    # _fig, _ax1 = plt.subplots()
-    # _ax2 = _ax1.twinx()
-
-    # _ax1.plot(lags_avgT / YEAR * 12, corr_avgT, color="tab:blue", label=r"$\overline{T}$")
-    # _ax2.plot(lags_DeltaT / YEAR * 12, corr_DeltaT, color="tab:red", label=r"$\Delta T$")
-
-    # _ax1.set_xlim(left=-1, right=12)
-
-    # align_zero_yaxis(_ax1, _ax2)
-
-
-    # _ax1.set_xlabel(r"$\mathrm{Lag}\;[\mathrm{months}]$")
-    # _ax1.set_ylabel(r"$C_{\overline{T}}$", color="tab:blue")
-    # _ax2.set_ylabel(r"$C_{\Delta T}$", color="tab:red")
-
-    # _ax1.tick_params(axis="y", labelcolor="tab:blue")
-    # _ax2.tick_params(axis="y", labelcolor="tab:red")
-
-    # _ax1.grid(alpha=0.3, linestyle="--")
-
-    # _lines1, _labels1 = _ax1.get_legend_handles_labels()
-    # _lines2, _labels2 = _ax2.get_legend_handles_labels()
-    # _ax1.legend(_lines1 + _lines2, _labels1 + _labels2)
-
-    # _fig.tight_layout()
-    # _fig
     return
 
 
@@ -535,7 +520,7 @@ def _(
     kernel_weight = cosine_trapezoid_weights(space_coord, n_features=X.shape[1])
 
     # Snapshot data and sub-sampling
-    X_snap, Y_snap, dt_eff = make_snapshots(centered_data, dt=dt,lag=6)
+    X_snap, Y_snap, dt_eff = make_snapshots(centered_data, dt=dt,lag=2)
     n_train = min(n_snapshots_training, X_snap.shape[0])
     idx = rng.choice(X_snap.shape[0], size=n_train, replace=False)
     X_snap = X_snap[idx]
@@ -598,24 +583,81 @@ def _(plt, tsvd):
 
 
 @app.cell
-def _(KoopmanSpectrumKDMD, dt_eff, kdmd, tsvd):
-    rel_threshold_svd = 1e-3
-    Kr, Ur, Sr = tsvd.solve_from_factorization(
-        kdmd.A,
-        rel_threshold_svd
-    )
-    # A is not used again; free the last full-size Gram matrix (~7 GB at N=30k)
-    # so the response section downstream has headroom.
+def _(KoopmanSpectrumKDMD, dt_eff, kdmd, np, tsvd):
+    from scipy.optimize import linear_sum_assignment as _linear_sum_assignment
+
+    _tsvd_thresholds = np.asarray((1e-2, 5e-3, 1e-3), dtype=float)
+    _tsvd_n_modes = 6
+    _tsvd_raw_spectra = []
+    _tsvd_tracked_spectra = []
+    _tsvd_ranks = []
+    spectrum = None
+    eigs_ct = None
+
+    # Reuse the same Gram factorization and lagged cross-kernel matrix at every
+    # final threshold. Only the retained TSVD basis changes.
+    for _threshold_index, _threshold in enumerate(_tsvd_thresholds):
+        _kr, _ur, _sr = tsvd.solve_from_factorization(
+            kdmd.A,
+            rel_threshold=float(_threshold),
+        )
+        _threshold_spectrum = KoopmanSpectrumKDMD.from_koopman_matrix(
+            _kr,
+            kernel=kdmd.kernel,
+            reference_data=kdmd.reference_data,
+            U_r=_ur,
+            S_r=_sr,
+        )
+        _threshold_eigs_ct = _threshold_spectrum.continuous_time_eigenvalues(
+            dt_eff
+        )
+        if _threshold_eigs_ct.size < _tsvd_n_modes + 1:
+            raise ValueError(
+                f"TSVD threshold {_threshold:g} retained fewer than "
+                f"{_tsvd_n_modes} non-stationary eigenvalues."
+            )
+
+        _tsvd_raw_spectra.append(_threshold_eigs_ct.copy())
+        _tsvd_ranks.append(_sr.size)
+        if _threshold_index == 0:
+            _tracked_at_threshold = _threshold_eigs_ct[
+                1 : _tsvd_n_modes + 1
+            ].copy()
+        else:
+            _candidate_eigs = _threshold_eigs_ct[1:]
+            _matching_cost = np.abs(
+                _tsvd_tracked_spectra[-1][:, None]
+                - _candidate_eigs[None, :]
+            )
+            _matched_rows, _matched_columns = _linear_sum_assignment(
+                _matching_cost
+            )
+            _tracked_at_threshold = np.empty(_tsvd_n_modes, dtype=complex)
+            _tracked_at_threshold[_matched_rows] = _candidate_eigs[
+                _matched_columns
+            ]
+        _tsvd_tracked_spectra.append(_tracked_at_threshold)
+
+        # Keep 5e-3 as the canonical spectrum for all existing downstream cells.
+        if _threshold_index == 1:
+            spectrum = _threshold_spectrum
+            eigs_ct = _threshold_eigs_ct
+
+    if spectrum is None or eigs_ct is None:
+        raise AssertionError("The canonical 5e-3 TSVD spectrum was not constructed.")
+
+    tsvd_thresholds = _tsvd_thresholds.copy()
+    tsvd_ranks = np.asarray(_tsvd_ranks, dtype=int)
+    tsvd_eigenvalues_raw = tuple(_tsvd_raw_spectra)
+    tsvd_eigenvalues_tracked = np.vstack(_tsvd_tracked_spectra)
     kdmd.A = None
-    spectrum = KoopmanSpectrumKDMD.from_koopman_matrix(
-        Kr,
-        kernel=kdmd.kernel,
-        reference_data=kdmd.reference_data,
-        U_r=Ur,
-        S_r=Sr,
+    return (
+        eigs_ct,
+        spectrum,
+        tsvd_eigenvalues_tracked,
+        tsvd_ranks,
+        tsvd_thresholds,
     )
-    eigs_ct = spectrum.continuous_time_eigenvalues(dt_eff)
-    return eigs_ct, spectrum
 
 
 @app.cell
@@ -625,11 +667,325 @@ def _(YEAR, eigs_ct, plt):
     ax.set_xlabel(r"$\mathrm{Re}\,\lambda$ [year$^{-1}$]",size=16)
     ax.set_ylabel(r"$\mathrm{Im}\,\lambda$ [year$^{-1}$]",size=16)
     ax.grid(alpha=0.3)
-    ax.set_xlim(left=-2, right=0.01)
-    ax.set_ylim(bottom=-0.001, top=0.001)
+    # ax.set_xlim(left=-2, right=0.01)
     # fig.savefig("figures/eigenvalues_near.png",dpi=400)
     plt.tight_layout()
     plt.show()
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### TSVD truncation sensitivity
+
+    Compare the six leading non-stationary Koopman eigenvalues while varying
+    the final TSVD truncation threshold. The snapshot pairs, kernel matrices,
+    and preliminary Gram factorization are shared across all thresholds.
+    """)
+    return
+
+
+@app.cell
+def _(YEAR, plt, tsvd_eigenvalues_tracked, tsvd_ranks, tsvd_thresholds):
+    tsvd_sensitivity_fig, (
+        _tsvd_real_ax,
+        _tsvd_imag_ax,
+        _tsvd_rank_ax,
+    ) = plt.subplots(
+        nrows=3,
+        ncols=1,
+        figsize=(8, 9),
+        sharex=True,
+    )
+
+    for _mode_index in range(tsvd_eigenvalues_tracked.shape[1]):
+        _mode_values_per_year = (
+            tsvd_eigenvalues_tracked[:, _mode_index] * YEAR
+        )
+        _mode_label = rf"$\lambda_{{{_mode_index + 1}}}$"
+        _tsvd_real_ax.plot(
+            tsvd_thresholds,
+            _mode_values_per_year.real,
+            marker="o",
+            label=_mode_label,
+        )
+        _tsvd_imag_ax.plot(
+            tsvd_thresholds,
+            _mode_values_per_year.imag,
+            marker="o",
+            label=_mode_label,
+        )
+
+    _tsvd_rank_ax.plot(
+        tsvd_thresholds,
+        tsvd_ranks,
+        marker="o",
+        color="black",
+    )
+    for _ax in (_tsvd_real_ax, _tsvd_imag_ax, _tsvd_rank_ax):
+        _ax.set_xscale("log")
+        _ax.invert_xaxis()
+        _ax.grid(alpha=0.3, linestyle="--")
+    for _ax in (_tsvd_real_ax, _tsvd_imag_ax):
+        _ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.5)
+
+    _tsvd_real_ax.set_ylabel(
+        r"$\mathrm{Re}\,\lambda$ [year$^{-1}$]",
+        size=16,
+    )
+    _tsvd_imag_ax.set_ylabel(
+        r"$\mathrm{Im}\,\lambda$ [year$^{-1}$]",
+        size=16,
+    )
+    _tsvd_rank_ax.set_ylabel("Retained rank", size=16)
+    _tsvd_rank_ax.set_xlabel("TSVD relative threshold", size=16)
+    _tsvd_rank_ax.set_xticks(tsvd_thresholds)
+    # _tsvd_rank_ax.set_xticklabels(
+    #     (r"$10^{-2}$", r"$5\times10^{-3}$", r"$10^{-3}$", r"$5\times10^{-4}$")
+    # )
+    _tsvd_real_ax.legend(ncols=2)
+    tsvd_sensitivity_fig.tight_layout()
+    tsvd_sensitivity_fig
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Snapshot-lag sensitivity
+
+    Compare the leading non-stationary Koopman eigenvalues obtained from
+    snapshot pairs separated by 1, 2, 6, 12, and 24 months. The reference
+    snapshots, kernel, and reduced basis are held fixed so that only the
+    snapshot separation changes.
+    """)
+    return
+
+
+@app.cell
+def _(
+    DAY,
+    KernelDMD,
+    KoopmanSpectrumKDMD,
+    TSVDRegularizer,
+    WeightedGaussianKernel,
+    asymptotic_warm_ds,
+    centered_data,
+    dt,
+    kernel_weight,
+    n_snapshots_training,
+    np,
+    pdist,
+):
+    import gc as _gc
+    from scipy.optimize import linear_sum_assignment as _linear_sum_assignment
+
+    _lag_months = np.asarray((1, 2, 6, 12, 24), dtype=int)
+    _lag_rng_seed = 0
+    _lag_kernel_batch_size = 1_000
+    _lag_rel_threshold_svd_temporary = 1e-3
+    _lag_rel_threshold_svd = 5e-3
+    _lag_n_modes = 6
+
+    # The requested lags are integer numbers of saved 30-day snapshots.
+    _trajectory_time = np.asarray(asymptotic_warm_ds["time"].values, dtype=float)
+    _trajectory_steps = np.diff(_trajectory_time)
+    if _trajectory_steps.size == 0:
+        raise ValueError("Lag sensitivity requires at least two saved snapshots.")
+    if not np.allclose(_trajectory_steps, _trajectory_steps[0], rtol=1e-12, atol=0.0):
+        raise ValueError("Lag sensitivity requires a regularly sampled trajectory.")
+    _trajectory_dt = float(_trajectory_steps[0])
+    if not np.isclose(_trajectory_dt, dt, rtol=1e-12, atol=0.0):
+        raise ValueError("The Koopman trajectory and correlation data have different sampling intervals.")
+
+    _model_month = 30.0 * DAY
+    _lag_steps_float = _lag_months * _model_month / _trajectory_dt
+    _lag_steps = np.rint(_lag_steps_float).astype(int)
+    if not np.allclose(_lag_steps_float, _lag_steps, rtol=0.0, atol=1e-12):
+        raise ValueError("Requested month lags do not map to integer saved-snapshot lags.")
+    if np.any(_lag_steps < 1):
+        raise ValueError("Every snapshot lag must be at least one saved time step.")
+
+    # Restrict all fits to origins that have a target at the largest lag, then
+    # use the same deterministic subsample for every lag.
+    _max_lag = int(_lag_steps.max())
+    _n_common_origins = centered_data.shape[0] - _max_lag
+    if _n_common_origins < 1:
+        raise ValueError("The trajectory is too short for the requested maximum lag.")
+    _n_lag_train = min(int(n_snapshots_training), _n_common_origins)
+    if _n_lag_train < 2:
+        raise ValueError("Lag sensitivity requires at least two training snapshots.")
+    _lag_rng = np.random.default_rng(_lag_rng_seed)
+    _lag_origins = _lag_rng.choice(
+        _n_common_origins,
+        size=_n_lag_train,
+        replace=False,
+    )
+    _lag_reference_data = centered_data[_lag_origins]
+    if np.any(_lag_origins[:, None] + _lag_steps[None, :] >= centered_data.shape[0]):
+        raise AssertionError("At least one lagged target falls outside the trajectory.")
+
+    _lag_weighted_reference = (
+        _lag_reference_data * np.sqrt(kernel_weight)[None, :]
+    )
+    _lag_sigma = float(
+        np.median(pdist(_lag_weighted_reference, metric="euclidean"))
+    )
+    if not np.isfinite(_lag_sigma) or _lag_sigma <= 0.0:
+        raise ValueError("Lag-sensitivity kernel bandwidth must be positive and finite.")
+    _lag_kernel = WeightedGaussianKernel(
+        sigma=_lag_sigma,
+        weights=kernel_weight,
+    )
+
+    # The first fit supplies the shared Gram factorization. Later lagged
+    # cross-kernel matrices are projected into this basis block by block, so
+    # no additional full N-by-N matrices are allocated.
+    _first_targets = centered_data[_lag_origins + int(_lag_steps[0])]
+    _lag_kdmd = KernelDMD(kernel=_lag_kernel)
+    _lag_kdmd.fit_snapshots(X=_lag_reference_data, Y=_first_targets)
+    _lag_tsvd = TSVDRegularizer()
+    _lag_tsvd.factorize(
+        _lag_kdmd.G,
+        method="eigsh",
+        symmetrize=False,
+        rel_threshold=_lag_rel_threshold_svd_temporary,
+    )
+    _first_kr, _lag_ur, _lag_sr = _lag_tsvd.solve_from_factorization(
+        _lag_kdmd.A,
+        _lag_rel_threshold_svd,
+    )
+    _lag_kdmd.G = None
+    _lag_kdmd.A = None
+
+    _lag_sr_inv_sqrt = 1.0 / np.sqrt(_lag_sr)
+
+    def _reduced_koopman_for_targets(_targets):
+        _reduced_cross_kernel = np.zeros(
+            (_lag_ur.shape[1], _lag_ur.shape[1]),
+            dtype=np.result_type(_lag_ur.dtype, np.float64),
+        )
+        for _start in range(0, _targets.shape[0], _lag_kernel_batch_size):
+            _end = min(_start + _lag_kernel_batch_size, _targets.shape[0])
+            _cross_kernel_block = _lag_kernel(
+                _targets[_start:_end],
+                _lag_reference_data,
+            )
+            _reduced_cross_kernel += (
+                _lag_ur[_start:_end].conj().T
+                @ (_cross_kernel_block @ _lag_ur)
+            )
+            del _cross_kernel_block
+        return (
+            _lag_sr_inv_sqrt[:, None]
+            * _reduced_cross_kernel
+            * _lag_sr_inv_sqrt[None, :]
+        )
+
+    # Check the blockwise projection against the direct expression on a small
+    # row subset before using it for the expensive lag sweep.
+    _probe_size = min(32, _n_lag_train)
+    _probe_targets = _first_targets[:_probe_size]
+    _probe_kernel = _lag_kernel(_probe_targets, _lag_reference_data)
+    _probe_direct = (
+        _lag_ur[:_probe_size].conj().T @ (_probe_kernel @ _lag_ur)
+    )
+    _probe_batched = np.zeros_like(_probe_direct)
+    _probe_batch_size = max(1, _probe_size // 3)
+    for _start in range(0, _probe_size, _probe_batch_size):
+        _end = min(_start + _probe_batch_size, _probe_size)
+        _probe_block = _lag_kernel(
+            _probe_targets[_start:_end],
+            _lag_reference_data,
+        )
+        _probe_batched += (
+            _lag_ur[_start:_end].conj().T @ (_probe_block @ _lag_ur)
+        )
+    if not np.allclose(_probe_batched, _probe_direct, rtol=1e-11, atol=1e-11):
+        raise AssertionError("Batched reduced cross-kernel projection is inconsistent.")
+    del _probe_kernel, _probe_direct, _probe_batched, _probe_block
+
+    _lag_raw_spectra = []
+    _lag_tracked_spectra = []
+    for _lag_index, (_lag_month, _lag_step) in enumerate(
+        zip(_lag_months, _lag_steps)
+    ):
+        print(_lag_month)
+        if _lag_index == 0:
+            _lag_kr = _first_kr
+        else:
+            _lag_targets = centered_data[_lag_origins + int(_lag_step)]
+            _lag_kr = _reduced_koopman_for_targets(_lag_targets)
+
+        _lag_spectrum = KoopmanSpectrumKDMD.from_koopman_matrix(_lag_kr)
+        _lag_dt_eff = float(_lag_step) * _trajectory_dt
+        _lag_eigs_ct = _lag_spectrum.continuous_time_eigenvalues(_lag_dt_eff)
+        if _lag_eigs_ct.size < _lag_n_modes + 1:
+            raise ValueError(
+                f"Lag {_lag_month} months produced fewer than "
+                f"{_lag_n_modes} non-stationary eigenvalues."
+            )
+        _lag_raw_spectra.append(_lag_eigs_ct.copy())
+
+        if _lag_index == 0:
+            _tracked_at_lag = _lag_eigs_ct[1 : _lag_n_modes + 1].copy()
+        else:
+            _candidate_eigs = _lag_eigs_ct[1:]
+            _matching_cost = np.abs(
+                _lag_tracked_spectra[-1][:, None] - _candidate_eigs[None, :]
+            )
+            _matched_rows, _matched_columns = _linear_sum_assignment(_matching_cost)
+            _tracked_at_lag = np.empty(_lag_n_modes, dtype=complex)
+            _tracked_at_lag[_matched_rows] = _candidate_eigs[_matched_columns]
+        _lag_tracked_spectra.append(_tracked_at_lag)
+
+        if _lag_index > 0:
+            del _lag_targets
+        del _lag_kr, _lag_spectrum, _lag_eigs_ct
+        _gc.collect()
+
+    lag_months = _lag_months.copy()
+    lag_eigenvalues_raw = np.vstack(_lag_raw_spectra)
+    lag_eigenvalues_tracked = np.vstack(_lag_tracked_spectra)
+    return lag_eigenvalues_tracked, lag_months
+
+
+@app.cell
+def _(YEAR, lag_eigenvalues_tracked, lag_months, plt):
+    lag_spectrum_fig, (_lag_real_ax, _lag_imag_ax) = plt.subplots(
+        nrows=2,
+        ncols=1,
+        figsize=(8, 7),
+        sharex=True,
+    )
+    for _mode_index in range(lag_eigenvalues_tracked.shape[1]):
+        _mode_values_per_year = lag_eigenvalues_tracked[:, _mode_index] * YEAR
+        _mode_label = rf"$\lambda_{{{_mode_index + 1}}}$"
+        _lag_real_ax.plot(
+            lag_months,
+            _mode_values_per_year.real,
+            marker="o",
+            label=_mode_label,
+        )
+        _lag_imag_ax.plot(
+            lag_months,
+            _mode_values_per_year.imag,
+            marker="o",
+            label=_mode_label,
+        )
+
+    for _lag_ax in (_lag_real_ax, _lag_imag_ax):
+        _lag_ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.5)
+        _lag_ax.grid(alpha=0.3, linestyle="--")
+        _lag_ax.set_xticks(lag_months)
+
+    _lag_real_ax.set_ylabel(r"$\mathrm{Re}\,\lambda$ [year$^{-1}$]", size=16)
+    _lag_imag_ax.set_ylabel(r"$\mathrm{Im}\,\lambda$ [year$^{-1}$]", size=16)
+    _lag_imag_ax.set_xlabel("Snapshot lag [months]", size=16)
+    _lag_real_ax.legend(ncols=2)
+    lag_spectrum_fig.tight_layout()
+    lag_spectrum_fig
     return
 
 
@@ -1238,7 +1594,7 @@ def _(
         label=r"$\Delta T$ KDMD",
     )
 
-    _ax1.set_xlim(left=-1, right=25)
+    _ax1.set_xlim(left=-1, right=40)
 
     align_zero_yaxis(_ax1, _ax2)
 
@@ -1268,8 +1624,84 @@ def _(mo):
 
 
 @app.cell
-def _(data_dir, xr):
-    response_numerical = xr.open_dataset(data_dir / "response_co2_mu0p972_{1}.nc")
+def _(data_dir, np, xr):
+    response_input_filenames = tuple(
+        f"response_co2_mu1_{{{_index}}}.nc"
+        for _index in range(1, 3)
+    )
+    _response_datasets = tuple(
+        xr.open_dataset(data_dir / _filename)
+        for _filename in response_input_filenames
+    )
+    try:
+        _reference_response = _response_datasets[0]
+        _reference_time = np.asarray(_reference_response["time"].values, dtype=float)
+        _reference_latitude = np.asarray(_reference_response["latitude"].values, dtype=float)
+
+        _response_data_vars = {}
+        for _variable_name in _reference_response.data_vars:
+            _reference_variable = _reference_response[_variable_name]
+            _variable_values = []
+
+            for _filename, _dataset in zip(response_input_filenames, _response_datasets):
+                if not np.array_equal(
+                    np.asarray(_dataset["time"].values, dtype=float),
+                    _reference_time,
+                ):
+                    raise ValueError(f"{_filename} has a mismatched response time grid.")
+                if not np.array_equal(
+                    np.asarray(_dataset["latitude"].values, dtype=float),
+                    _reference_latitude,
+                ):
+                    raise ValueError(f"{_filename} has a mismatched response latitude grid.")
+                if _variable_name not in _dataset:
+                    raise ValueError(f"{_filename} is missing {_variable_name!r}.")
+                if _dataset[_variable_name].dims != _reference_variable.dims:
+                    raise ValueError(f"{_filename} has mismatched {_variable_name!r} dimensions.")
+
+                _values = np.asarray(_dataset[_variable_name].values, dtype=float)
+                if _values.shape != _reference_variable.shape:
+                    raise ValueError(f"{_filename} has a mismatched {_variable_name!r} shape.")
+                if not np.isfinite(_values).all():
+                    raise ValueError(f"{_filename} contains non-finite {_variable_name!r} values.")
+                _variable_values.append(_values)
+
+            _response_data_vars[_variable_name] = (
+                _reference_variable.dims,
+                np.mean(np.stack(_variable_values, axis=0), axis=0),
+                dict(_reference_variable.attrs),
+            )
+
+        for _attribute_name in ("stochastic_dt", "epsilon"):
+            _reference_value = _reference_response.attrs[_attribute_name]
+            for _filename, _dataset in zip(response_input_filenames, _response_datasets):
+                if not np.isclose(_dataset.attrs[_attribute_name], _reference_value):
+                    raise ValueError(f"{_filename} has a mismatched {_attribute_name!r} attribute.")
+
+        response_numerical = xr.Dataset(
+            data_vars=_response_data_vars,
+            coords={
+                "time": (
+                    "time",
+                    _reference_time,
+                    dict(_reference_response["time"].attrs),
+                ),
+                "latitude": (
+                    "latitude",
+                    _reference_latitude,
+                    dict(_reference_response["latitude"].attrs),
+                ),
+            },
+            attrs=dict(_reference_response.attrs),
+        )
+        response_numerical.attrs["source_response_datasets"] = ", ".join(
+            response_input_filenames
+        )
+        response_numerical.attrs["response_average_n_runs"] = len(response_input_filenames)
+    finally:
+        for _dataset in _response_datasets:
+            _dataset.close()
+
     response_numerical
     return (response_numerical,)
 
@@ -1335,7 +1767,7 @@ def _(mo):
     mo.md(r"""
     ### Reconstructing the Response Function
 
-    We reconstruct the numerical CO$_2$ Green's function from the unperturbed
+    We reconstruct the numerical CO2 Green's function from the unperturbed
     KDMD spectrum via the fluctuation-dissipation route. The $m_1$ perturbation
     enters only the outgoing-longwave term
     $\mathrm{OLR} = \sigma T^4\,(1 - m_1 \tanh(c_3 T^6))$ and lives in the
@@ -1426,12 +1858,6 @@ def _(
     spectrum,
     tsvd,
 ):
-    # Per-latitude Green's function G_i(t) = C_{T_i, Gamma}(t). The numerical impulse
-    # is applied during the first integrator step, so the numerical response saved at
-    # time t is the true response at lag (t - dt): the perturbation only manifests one
-    # step after t=0, hence G_num(t) ~ C(t - dt). Evaluate the KDMD correlation on that
-    # shifted lag grid so the two are compared at equal physical lag.
-    _dt_response = float(response_numerical.attrs["stochastic_dt"])
     response_lags = np.asarray(response_numerical["time"].values, dtype=float) 
     response_local_observables_train = centered_data[:-1, :][idx]
 
@@ -1586,11 +2012,9 @@ def _(DAY, G_kdmd, YEAR, np, plt, response_numerical, space_coord):
 @app.cell
 def _(DAY, G_kdmd_full, G_numerical, full_latitude, full_time_years, plt):
     # Spatial profiles G(x) of the numerical response and the KDMD reconstruction at
-    # a single time. The spurious t=0 sample was already dropped in the comparison
-    # cell, so index 0 is the first saved step (t=Dt) and G_numerical / G_kdmd_full
-    # are aligned at the same physical time -- use the same index for both (no shift).
+    # a single time.
     # Bump _profile_t_index for a later slice.
-    _profile_t_index = 1
+    _profile_t_index = 150
     _profile_time = float(full_time_years[_profile_t_index])
 
     _num_profile = G_numerical[_profile_t_index, :] * DAY
@@ -1612,6 +2036,183 @@ def _(DAY, G_kdmd_full, G_numerical, full_latitude, full_time_years, plt):
     _profile_ax.grid(True, alpha=0.3)
     _profile_fig.tight_layout()
     _profile_fig
+    return
+
+
+@app.cell
+def _(
+    G_kdmd_full,
+    G_numerical,
+    YEAR,
+    asymptotic_warm_ds,
+    build_ivp_operator_from_dataset,
+    full_latitude,
+    full_time_years,
+    np,
+    plt,
+    response_numerical,
+    surface_albedo,
+    warm_ds,
+):
+    # Sensitivity profile S_T(x) = integral G_T(x, t) dt. G_T is in K/s, so
+    # integrating over seconds gives S_T in K. The initial zero sample was already
+    # dropped in the comparison cell that produced G_numerical and G_kdmd_full.
+    full_time_seconds = full_time_years * YEAR
+
+    if G_numerical.shape != G_kdmd_full.shape:
+        raise ValueError("Numerical and KDMD Green's functions have mismatched shapes.")
+    if G_numerical.shape != (full_time_seconds.size, full_latitude.size):
+        raise ValueError("Green's function shape does not match time and latitude coordinates.")
+    if not np.isfinite(G_numerical).all() or not np.isfinite(G_kdmd_full).all():
+        raise ValueError("Green's function contains non-finite values.")
+
+    sensitivity_numerical = np.trapezoid(G_numerical, x=full_time_seconds, axis=0) * response_numerical.attrs["epsilon"]
+    sensitivity_kdmd = np.trapezoid(G_kdmd_full, x=full_time_seconds, axis=0) * response_numerical.attrs["epsilon"]
+
+    if sensitivity_numerical.shape != full_latitude.shape:
+        raise ValueError("Numerical sensitivity shape does not match latitude coordinates.")
+    if sensitivity_kdmd.shape != full_latitude.shape:
+        raise ValueError("KDMD sensitivity shape does not match latitude coordinates.")
+    if not np.isfinite(sensitivity_numerical).all() or not np.isfinite(sensitivity_kdmd).all():
+        raise ValueError("Sensitivity profile contains non-finite values.")
+
+    _warm_operator = build_ivp_operator_from_dataset(warm_ds)
+    _warm_albedo = surface_albedo(
+        asymptotic_warm_ds["temperature"].values,
+        _warm_operator.empirical_fields.b_parameter[None, :],
+        _warm_operator.empirical_fields.surface_height_offset[None, :],
+        _warm_operator.params,
+    )
+    _albedo_coord = np.asarray(warm_ds["latitude"].values, dtype=float)
+    _albedo_mean = np.asarray(_warm_albedo.mean(axis=0), dtype=float)
+    _albedo_sorter = np.argsort(_albedo_coord)
+    _albedo_coord = _albedo_coord[_albedo_sorter]
+    _albedo_delta = _albedo_mean[_albedo_sorter] - 0.5
+
+    _ice_lines = []
+    _valid_albedo = np.isfinite(_albedo_coord) & np.isfinite(_albedo_delta)
+    if np.count_nonzero(_valid_albedo) >= 2:
+        _ice_x = _albedo_coord[_valid_albedo]
+        _ice_delta = _albedo_delta[_valid_albedo]
+        _exact_crossings = np.flatnonzero(np.isclose(_ice_delta, 0.0, atol=1e-12))
+        _ice_lines.extend(float(_ice_x[_index]) for _index in _exact_crossings)
+        _sign_crossings = np.flatnonzero(_ice_delta[:-1] * _ice_delta[1:] < 0.0)
+        for _crossing_index in _sign_crossings:
+            _x0 = _ice_x[_crossing_index]
+            _x1 = _ice_x[_crossing_index + 1]
+            _y0 = _ice_delta[_crossing_index]
+            _y1 = _ice_delta[_crossing_index + 1]
+            _ice_lines.append(float(_x0 - _y0 * (_x1 - _x0) / (_y1 - _y0)))
+    ice_line_latitudes = np.asarray(sorted(set(np.round(_ice_lines, 12))), dtype=float)
+
+    _sensitivity_fig, _sensitivity_ax = plt.subplots(figsize=(8, 5))
+    _sensitivity_ax.plot(
+        full_latitude,
+        sensitivity_numerical,
+        color="black",
+        lw=2,
+        label="numerical",
+    )
+    _sensitivity_ax.plot(
+        full_latitude,
+        sensitivity_kdmd,
+        color="crimson",
+        lw=2,
+        ls="--",
+        label="KDMD",
+    )
+    for _ice_line_index, _ice_line_latitude in enumerate(ice_line_latitudes):
+        _sensitivity_ax.axvline(
+            _ice_line_latitude,
+            color="tab:red",
+            linestyle="--",
+            lw=1.2,
+        )
+        _sensitivity_ax.annotate(
+            r"$x_{\alpha=0.5}$",
+            xy=(_ice_line_latitude, 0.2),
+            xycoords=("data", "axes fraction"),
+            xytext=(4, 0),
+            textcoords="offset points",
+            color="tab:red",
+            rotation=90,
+            va="center",
+            ha="left",
+            fontsize=16,
+        )
+    _sensitivity_ax.set_xlabel(r"$x$", fontsize=14)
+    _sensitivity_ax.set_ylabel(r"$ \varepsilon \int G_T(x,t)\,dt \; [\mathrm{K}]$", fontsize=14)
+    _sensitivity_ax.set_title("Sensitivity profile", fontsize=14)
+    _sensitivity_ax.set_xlim(full_latitude.min(), full_latitude.max())
+    _sensitivity_ax.legend(frameon=False, fontsize=12)
+    _sensitivity_ax.grid(True, alpha=0.3)
+    _sensitivity_fig.tight_layout()
+    _sensitivity_ax.set_xlim(left=0,right=1)
+    _sensitivity_fig
+    return ice_line_latitudes, sensitivity_kdmd, sensitivity_numerical
+
+
+@app.cell
+def _(
+    data_dir,
+    full_latitude,
+    ice_line_latitudes,
+    response_numerical,
+    sensitivity_kdmd,
+    sensitivity_numerical,
+    xr,
+):
+    sensitivity_dataset = xr.Dataset(
+        data_vars={
+            "sensitivity": (
+                ("latitude",),
+                sensitivity_numerical,
+                {
+                    "units": "K",
+                    "long_name": "epsilon-scaled time-integrated temperature Green's function",
+                    "description": "epsilon * integral G_T(x, t) dt using the first-sample-dropped response grid",
+                },
+            ),
+            "sensitivity_kdmd": (
+                ("latitude",),
+                sensitivity_kdmd,
+                {
+                    "units": "K",
+                    "long_name": "epsilon-scaled time-integrated KDMD temperature Green's function",
+                    "description": "epsilon * integral G_T^KDMD(x, t) dt using the first-sample-dropped response grid",
+                },
+            ),
+            "ice_line_latitude": (
+                ("ice_line",),
+                ice_line_latitudes,
+                {
+                    "units": "1",
+                    "long_name": "latitude where mean albedo equals 0.5",
+                },
+            ),
+        },
+        coords={
+            "latitude": (
+                "latitude",
+                full_latitude,
+                {"units": "1", "long_name": "normalized latitude"},
+            ),
+            "ice_line": (
+                "ice_line",
+                range(ice_line_latitudes.size),
+                {"long_name": "ice-line crossing index"},
+            ),
+        },
+        attrs=dict(response_numerical.attrs),
+    )
+    sensitivity_dataset.attrs["source_response_dataset"] = "response_co2_mu1.nc"
+    sensitivity_dataset.attrs["sensitivity_definition"] = (
+        "epsilon * integral G_T(x, t) dt; G_T has units K s^-1 and time is integrated in seconds"
+    )
+
+    sensitivity_output_path = data_dir / "sensitivity_co2_mu1.nc"
+    sensitivity_dataset.to_netcdf(sensitivity_output_path, engine="scipy")
+    sensitivity_output_path
     return
 
 
@@ -1668,11 +2269,11 @@ def _(
     import gc as _gc
 
     _tipping_dataset_specs = (
-        (1.00, "new_stochastic_warm_mu1.nc"),
-        (0.99, "new_stochastic_warm_mu0p99.nc"),
-        (0.98, "new_stochastic_warm_mu0p98.nc"),
-        (0.975, "new_stochastic_warm_mu0p975.nc"),
-        (0.972, "new_stochastic_warm_mu0p972.nc"),
+        (1.00, "new_stochastic_warm_mu1_{1}.nc"),
+        (0.99, "new_stochastic_warm_mu0p99_{1}.nc"),
+        (0.98, "new_stochastic_warm_mu0p98_{1}.nc"),
+        (0.975, "new_stochastic_warm_mu0p975_{1}.nc"),
+        (0.972, "new_stochastic_warm_mu0p972_{1}.nc"),
     )
     _tipping_rng_seed = 0
     _tipping_rel_threshold_svd_temporary = 1e-3
@@ -1848,7 +2449,7 @@ def _(DAY, YEAR, np, plt, tipping_eigenvalues, tipping_mu_values):
     with np.errstate(divide="ignore", invalid="ignore"):
         tipping_selected_timescales_months = np.abs(
             1.0 / tipping_selected_eigenvalues.real
-        ) / YEAR * 12.0
+        ) / YEAR 
     tipping_selected_timescales_months = np.where(
         np.isfinite(tipping_selected_timescales_months),
         tipping_selected_timescales_months,
@@ -1857,20 +2458,13 @@ def _(DAY, YEAR, np, plt, tipping_eigenvalues, tipping_mu_values):
 
     # The first panel shows decay rates, while the second shows the equivalent
     # timescales in months.
-    tipping_spectrum_fig, (_tipping_eigs_ax, _tipping_timescale_ax) = plt.subplots(
-        nrows=2,
+    tipping_spectrum_fig,  _tipping_timescale_ax = plt.subplots(
+        nrows=1,
         ncols=1,
-        figsize=(8, 7),
-        sharex=True,
     )
     for _plot_column, _eigenvalue_index in enumerate(_selected_eigenvalue_indices):
         _label = rf"$\lambda_{{{_eigenvalue_index}}}$"
-        _tipping_eigs_ax.plot(
-            tipping_mu_values,
-            tipping_selected_eigenvalues_per_day[:, _plot_column],
-            marker="o",
-            label=_label,
-        )
+
         _tipping_timescale_ax.plot(
             tipping_mu_values,
             tipping_selected_timescales_months[:, _plot_column],
@@ -1878,13 +2472,13 @@ def _(DAY, YEAR, np, plt, tipping_eigenvalues, tipping_mu_values):
             label=_label,
         )
 
-    for _ax in (_tipping_eigs_ax, _tipping_timescale_ax):
+    for _ax in [_tipping_timescale_ax]:
         _ax.set_xlabel(r"$\mu$", size=16)
         _ax.set_xlim(float(tipping_mu_values.max()), float(tipping_mu_values.min()))
         _ax.grid(alpha=0.3, linestyle="--")
 
 
-    _tipping_handles, _tipping_labels = _tipping_eigs_ax.get_legend_handles_labels()
+    _tipping_handles, _tipping_labels = _tipping_timescale_ax.get_legend_handles_labels()
     tipping_spectrum_fig.legend(
         _tipping_handles,
         _tipping_labels,
@@ -1893,10 +2487,16 @@ def _(DAY, YEAR, np, plt, tipping_eigenvalues, tipping_mu_values):
         fontsize=16
     )
 
-    _tipping_eigs_ax.set_ylabel(r"$\mathrm{Re}\,\lambda$ [day$^{-1}$]", size=16)
-    _tipping_timescale_ax.set_ylabel(r"$\tau$ [months]", size=16)
+
+    _tipping_timescale_ax.set_ylabel(r"$\tau$ [year]", size=16)
     tipping_spectrum_fig.tight_layout(rect=(0.0, 0.0, 0.84, 1.0))
-    tipping_spectrum_fig.savefig("../figures/tipping_eigenvalues.png",dpi=400)
+    #tipping_spectrum_fig.savefig("../figures/tipping_eigenvalues.png",dpi=400)
+    tipping_spectrum_fig.savefig("../figures/tipping_timescale.png",dpi=400)
+    return
+
+
+@app.cell
+def _():
     return
 
 

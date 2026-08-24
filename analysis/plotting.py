@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.9"
+__generated_with = "0.24.0"
 app = marimo.App(width="medium")
 
 
@@ -48,6 +48,21 @@ def _():
 def _(get_data_dir):
     data_dir = get_data_dir()
     return (data_dir,)
+
+
+@app.cell
+def _():
+    return
+
+
+@app.cell
+def _():
+    return
+
+
+@app.cell
+def _():
+    return
 
 
 @app.cell(hide_code=True)
@@ -343,6 +358,116 @@ def _(
     profile_fig.tight_layout()
     profile_fig
     # profile_fig.savefig("figures/stochastic_profiles_mu1.png",dpi=400)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Sensitivity profiles
+    """)
+    return
+
+
+@app.cell
+def _(data_dir, np, xr):
+    sensitivity_filenames = (
+        "sensitivity_co2_mu1.nc",
+        "sensitivity_co2_mu0p972.nc",
+    )
+
+    sensitivity_datasets = []
+    for _filename in sensitivity_filenames:
+        with xr.open_dataset(data_dir / _filename, engine="scipy") as _dataset:
+            _loaded_dataset = _dataset.load()
+
+        if "latitude" not in _loaded_dataset:
+            raise ValueError(f"{_filename} is missing the latitude coordinate.")
+        if "sensitivity" not in _loaded_dataset:
+            raise ValueError(f"{_filename} is missing the sensitivity variable.")
+        if "sensitivity_kdmd" not in _loaded_dataset:
+            raise ValueError(
+                f"{_filename} is missing the sensitivity_kdmd variable. "
+                "Rerun the sensitivity export in analysis/analysis.py."
+            )
+
+        _latitude = np.asarray(_loaded_dataset["latitude"].values, dtype=float)
+        _sensitivity = np.asarray(_loaded_dataset["sensitivity"].values, dtype=float)
+        _sensitivity_kdmd = np.asarray(
+            _loaded_dataset["sensitivity_kdmd"].values,
+            dtype=float,
+        )
+        if _latitude.ndim != 1 or _sensitivity.ndim != 1 or _sensitivity_kdmd.ndim != 1:
+            raise ValueError(f"{_filename} must contain 1D sensitivity arrays.")
+        if _latitude.shape != _sensitivity.shape or _latitude.shape != _sensitivity_kdmd.shape:
+            raise ValueError(f"{_filename} latitude and sensitivity shapes do not match.")
+        if (
+            not np.isfinite(_latitude).all()
+            or not np.isfinite(_sensitivity).all()
+            or not np.isfinite(_sensitivity_kdmd).all()
+        ):
+            raise ValueError(f"{_filename} contains non-finite sensitivity values.")
+
+        sensitivity_datasets.append(_loaded_dataset)
+
+    sensitivity_datasets = tuple(sensitivity_datasets)
+    return sensitivity_datasets, sensitivity_filenames
+
+
+@app.cell
+def _(np, plt, sensitivity_datasets, sensitivity_filenames):
+    sensitivity_fig, sensitivity_ax = plt.subplots(figsize=(8, 5))
+    stride = 2
+    for _dataset, _filename in zip(sensitivity_datasets, sensitivity_filenames):
+        _latitude = np.asarray(_dataset["latitude"].values, dtype=float)
+        _sensitivity = np.asarray(_dataset["sensitivity"].values, dtype=float) 
+        _sensitivity_kdmd = np.asarray(_dataset["sensitivity_kdmd"].values, dtype=float) 
+        _positive_hemisphere = _latitude >= 0
+        _mu = _dataset.attrs.get("param_mu")
+        _label = rf"$\mu={float(_mu):g}$" if _mu is not None else _filename.removesuffix(".nc")
+
+        (_line,) = sensitivity_ax.plot(
+            _latitude[_positive_hemisphere],
+            _sensitivity[_positive_hemisphere] / np.max(_sensitivity[_positive_hemisphere]),
+            lw=2,
+            label=rf"{_label}",
+        )
+        sensitivity_ax.scatter(
+            _latitude[_positive_hemisphere][::stride],
+            _sensitivity_kdmd[_positive_hemisphere][::stride] / np.max(_sensitivity_kdmd[_positive_hemisphere]),
+            color=_line.get_color(),
+            marker=".",
+            lw=2,
+        )
+
+        if "ice_line_latitude" in _dataset:
+            _ice_line_latitudes = np.asarray(
+                _dataset["ice_line_latitude"].values,
+                dtype=float,
+            )
+            _positive_ice_lines = _ice_line_latitudes[
+                np.isfinite(_ice_line_latitudes) & (_ice_line_latitudes >= 0)
+            ]
+            for _ice_line_latitude in _positive_ice_lines:
+                sensitivity_ax.axvline(
+                    _ice_line_latitude,
+                    color=_line.get_color(),
+                    linestyle="--",
+                    linewidth=1.0,
+                    alpha=1,
+                )
+
+    sensitivity_ax.set_xlabel(r"$x$", size=15)
+    sensitivity_ax.set_ylabel(
+        r"$\varepsilon \int G_T(x,t)\,dt \; [\mathrm{K}]$",
+        size=15,
+    )
+    sensitivity_ax.set_xlim(left=0.0)
+    sensitivity_ax.grid(linestyle="--", alpha=0.3)
+    sensitivity_ax.legend(frameon=False)
+    sensitivity_fig.tight_layout()
+    sensitivity_fig
+    sensitivity_fig.savefig("../figures/sensitivity_profiles_co2.png", dpi=400)
     return
 
 
