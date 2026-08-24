@@ -19,11 +19,18 @@ cd "$repository_root"
 export PATH="$HOME/.local/bin:$PATH"
 # Cluster cache and project files can be on separate filesystems.
 export UV_LINK_MODE=copy
-export PYTHONPATH=src
+venv_python="$repository_root/.venv/bin/python"
 
 echo "Host: $(hostname)"
 echo "Working directory: $PWD"
 uv --version
-uv run python --version
-uv run python -c "import gsebm; print('gsebm import works')"
-uv run python -m unittest discover -s tests
+echo "Virtual-environment interpreter: $venv_python"
+
+if [[ ! -x "$venv_python" ]]; then
+    echo "No project virtual environment found. Run 'uv sync' on the login node first." >&2
+    exit 1
+fi
+
+"$venv_python" --version
+"$venv_python" -c "import gsebm; print('gsebm import works')"
+"$venv_python" -m unittest discover -s tests
