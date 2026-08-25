@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=plasim-zonal-t
+#SBATCH --job-name=plasim-zonal-climate
 #SBATCH --time=04:00:00
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=4G
-#SBATCH --output=cluster/plasim-zonal-t-%j.out
-#SBATCH --error=cluster/plasim-zonal-t-%j.err
+#SBATCH --mem=8G
+#SBATCH --output=cluster/plasim-zonal-climate-%j.out
+#SBATCH --error=cluster/plasim-zonal-climate-%j.err
 
 # Submit from the repository root with:
 # sbatch cluster/extract_plasim_zonal_temperature.sbatch
@@ -21,7 +21,7 @@ co2_ppm=360
 solar_irradiance_w_m2=1365
 
 # This directory is an input only. The Python script opens its NetCDF files
-# read-only and writes only to the output directory below.
+# read-only and writes a zonal climate-diagnostics product below.
 input_dir="/data/complexp/fr120/PLASIM-1.0/plasim/run/output"
 output_dir="$repository_root/data"
 venv_python="$repository_root/.venv/bin/python"
