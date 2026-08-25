@@ -50,11 +50,14 @@ def main(
     for path in sorted(input_dir.glob("CONTROL_360ppm_PLA.*.*.nc")):
         match = FILE_PATTERN.fullmatch(path.name)
         if match is not None:
+            if path.stat().st_size == 0:
+                typer.echo(f"Skipping empty file: {path.name}")
+                continue
             files.append((path, int(match["year"]), int(match["month"])))
 
     if not files:
         raise typer.BadParameter(
-            "No files matching CONTROL_360ppm_PLA.YYYY.MM.nc were found.",
+            "No non-empty files matching CONTROL_360ppm_PLA.YYYY.MM.nc were found.",
             param_hint="--input-dir",
         )
 
