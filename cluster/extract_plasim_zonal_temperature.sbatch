@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=plasim-zonal-t
-#SBATCH --time=01:00:00
-#SBATCH --cpus-per-task=1
+#SBATCH --time=04:00:00
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=4G
 #SBATCH --output=cluster/plasim-zonal-t-%j.out
 #SBATCH --error=cluster/plasim-zonal-t-%j.err
@@ -25,6 +25,7 @@ solar_irradiance_w_m2=1365
 input_dir="/data/complexp/fr120/PLASIM-1.0/plasim/run/output"
 output_dir="$repository_root/data"
 venv_python="$repository_root/.venv/bin/python"
+workers="${SLURM_CPUS_PER_TASK:-8}"
 
 if [[ ! -x "$venv_python" ]]; then
     echo "No project virtual environment found. Run 'uv sync' on the login node first." >&2
@@ -35,9 +36,11 @@ echo "Host: $(hostname)"
 echo "Working directory: $PWD"
 echo "Input directory (read-only): $input_dir"
 echo "Output directory: $output_dir"
+echo "Worker processes: $workers"
 
 "$venv_python" cluster/extract_plasim_zonal_temperature.py \
     --input-dir "$input_dir" \
     --output-dir "$output_dir" \
     --co2-ppm "$co2_ppm" \
-    --solar-irradiance-w-m2 "$solar_irradiance_w_m2"
+    --solar-irradiance-w-m2 "$solar_irradiance_w_m2" \
+    --workers "$workers"

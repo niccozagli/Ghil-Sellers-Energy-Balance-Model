@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 import re
 
@@ -16,10 +18,70 @@ FILE_PATTERN = re.compile(
 )
 
 
+@dataclass(frozen=True)
+class InputFile:
+    """One dated PLASIM monthly file selected for processing."""
+
+    path: Path
+    year: int
+    month: int
+    is_reference: bool = False
+
+
+@dataclass(frozen=True)
+class ZonalTemperatureResult:
+    """Small, eagerly loaded result returned by one worker process."""
+
+    filename: str
+    year: int
+    month: int
+    time: np.ndarray
+    latitude: np.ndarray
+    temperature: np.ndarray
+    dataset_attrs: dict[str, object] | None = None
+    tas_attrs: dict[str, object] | None = None
+    time_attrs: dict[str, object] | None = None
+    latitude_attrs: dict[str, object] | None = None
+
+
 def _filename_value(value: float) -> str:
     """Format a numeric experiment setting compactly for a filename."""
 
     return f"{value:g}"
+
+
+def _extract_zonal_temperature(input_file: InputFile) -> ZonalTemperatureResult:
+    """Read one monthly file and return its zonal-mean temperature."""
+
+    path = input_file.path
+    # xarray.open_dataset opens the source read-only. Every source handle is
+    # closed in its worker before the compact result is sent to the parent.
+    with xr.open_dataset(path, engine="h5netcdf") as source_dataset:
+        tas = source_dataset["tas"]
+        required_dimensions = {"time", "lat", "lon"}
+        missing_dimensions = required_dimensions.difference(tas.dims)
+        extra_dimensions = set(tas.dims).difference(required_dimensions)
+        if missing_dimensions or extra_dimensions:
+            raise ValueError(
+                f"{path.name}: expected exactly the tas dimensions "
+                f"{sorted(required_dimensions)}, got {tas.dims}."
+            )
+
+        # Longitude cells have equal area at a fixed latitude, so the ordinary
+        # longitude mean is the zonal-mean temperature.
+        zonal_temperature = tas.mean(dim="lon").transpose("time", "lat").load()
+        return ZonalTemperatureResult(
+            filename=path.name,
+            year=input_file.year,
+            month=input_file.month,
+            time=np.asarray(zonal_temperature["time"].values),
+            latitude=np.asarray(zonal_temperature["lat"].values),
+            temperature=np.asarray(zonal_temperature.values),
+            dataset_attrs=source_dataset.attrs.copy() if input_file.is_reference else None,
+            tas_attrs=tas.attrs.copy() if input_file.is_reference else None,
+            time_attrs=tas["time"].attrs.copy() if input_file.is_reference else None,
+            latitude_attrs=tas["lat"].attrs.copy() if input_file.is_reference else None,
+        )
 
 
 @app.command()
@@ -42,18 +104,29 @@ def main(
     solar_irradiance_w_m2: float = typer.Option(
         ..., min=0.0, help="Experiment solar irradiance [W m^-2]."
     ),
+    workers: int = typer.Option(
+        8,
+        min=1,
+        help="Number of monthly files to process concurrently.",
+    ),
 ) -> None:
     """Create one zonal_T(time, lat) dataset from PLASIM monthly output."""
 
     # Keep only files whose name records a valid year and month.
-    files: list[tuple[Path, int, int]] = []
+    files: list[InputFile] = []
     for path in sorted(input_dir.glob("CONTROL_360ppm_PLA.*.*.nc")):
         match = FILE_PATTERN.fullmatch(path.name)
         if match is not None:
             if path.stat().st_size == 0:
                 typer.echo(f"Skipping empty file: {path.name}")
                 continue
-            files.append((path, int(match["year"]), int(match["month"])))
+            files.append(
+                InputFile(
+                    path=path,
+                    year=int(match["year"]),
+                    month=int(match["month"]),
+                )
+            )
 
     if not files:
         raise typer.BadParameter(
@@ -70,45 +143,56 @@ def main(
     if output_path.exists():
         raise FileExistsError(f"Refusing to overwrite existing output: {output_path}")
 
-    # Each item held here is small: time by latitude, after longitude reduction.
-    zonal_temperatures = []
-    reference_dataset_attrs: dict[str, object] | None = None
-    reference_tas_attrs: dict[str, object] | None = None
+    # The first valid file supplies the output metadata. Input order remains
+    # deterministic because ProcessPoolExecutor.map returns results in order.
+    files[0] = InputFile(
+        path=files[0].path,
+        year=files[0].year,
+        month=files[0].month,
+        is_reference=True,
+    )
+    results: list[ZonalTemperatureResult] = []
+    typer.echo(f"Processing {len(files)} files with {workers} workers")
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        for completed, result in enumerate(
+            executor.map(_extract_zonal_temperature, files, chunksize=1),
+            start=1,
+        ):
+            results.append(result)
+            typer.echo(f"Processed {result.filename} ({completed}/{len(files)})")
 
-    for path, year, month in files:
-        typer.echo(f"Reading {path.name}")
-        # xarray.open_dataset opens input datasets read-only. This script only
-        # calls to_netcdf below for output_path, never for files in input_dir.
-        with xr.open_dataset(path, engine="h5netcdf") as source_dataset:
-            tas = source_dataset["tas"]
-            required_dimensions = {"time", "lat", "lon"}
-            missing_dimensions = required_dimensions.difference(tas.dims)
-            if missing_dimensions:
-                raise ValueError(
-                    f"{path.name}: expected tas dimensions including "
-                    f"{sorted(required_dimensions)}, got {tas.dims}."
-                )
+    reference = results[0]
+    for result in results[1:]:
+        if not np.array_equal(result.latitude, reference.latitude):
+            raise ValueError(f"{result.filename}: latitude grid differs from the reference file.")
 
-            if reference_dataset_attrs is None:
-                # Use the first monthly file as the metadata reference.
-                reference_dataset_attrs = source_dataset.attrs.copy()
-                reference_tas_attrs = tas.attrs.copy()
-
-            # Longitude cells have equal area at a fixed latitude, so the
-            # ordinary longitude mean is the zonal-mean temperature.
-            zonal_temperature = tas.mean(dim="lon").assign_coords(
-                source_year=("time", np.full(tas.sizes["time"], year, dtype=int)),
-                source_month=("time", np.full(tas.sizes["time"], month, dtype=int)),
-                source_file=("time", np.full(tas.sizes["time"], path.name)),
-            )
-            zonal_temperature.attrs = tas.attrs.copy()
-            # Load only the reduced field before closing this source file.
-            zonal_temperatures.append(zonal_temperature.load())
-
-    # Combine every monthly field into one time series and retain source dates.
-    zonal_T = xr.concat(zonal_temperatures, dim="time").sortby("time")
-    zonal_T.name = "zonal_T"
-    zonal_T.attrs = reference_tas_attrs or {}
+    # Construct one compact xarray object after all worker files are closed.
+    time = np.concatenate([result.time for result in results])
+    temperature = np.concatenate([result.temperature for result in results], axis=0)
+    source_year = np.concatenate(
+        [np.full(result.time.size, result.year, dtype=int) for result in results]
+    )
+    source_month = np.concatenate(
+        [np.full(result.time.size, result.month, dtype=int) for result in results]
+    )
+    source_file = np.concatenate(
+        [np.full(result.time.size, result.filename) for result in results]
+    )
+    zonal_T = xr.DataArray(
+        temperature,
+        dims=("time", "lat"),
+        coords={
+            "time": ("time", time),
+            "lat": ("lat", reference.latitude),
+            "source_year": ("time", source_year),
+            "source_month": ("time", source_month),
+            "source_file": ("time", source_file),
+        },
+        name="zonal_T",
+        attrs=reference.tas_attrs or {},
+    ).sortby("time")
+    zonal_T["time"].attrs = reference.time_attrs or {}
+    zonal_T["lat"].attrs = reference.latitude_attrs or {}
     zonal_T.attrs.update(
         long_name="zonal-mean 2 m air temperature",
         averaging="unweighted mean over longitude",
@@ -116,9 +200,9 @@ def main(
 
     # Dataset-level attributes belong on the output Dataset, not on zonal_T.
     output_dataset = zonal_T.to_dataset()
-    output_dataset.attrs = reference_dataset_attrs or {}
+    output_dataset.attrs = reference.dataset_attrs or {}
     output_dataset.attrs.update(
-        zonal_mean_reference_file=files[0][0].name,
+        zonal_mean_reference_file=reference.filename,
         zonal_mean_file_count=len(files),
         zonal_mean_processing="tas averaged uniformly over lon",
         experiment_co2_concentration_ppm=co2_ppm,
