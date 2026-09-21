@@ -1014,10 +1014,16 @@ def _(KernelDMD, TSVDRegularizer, X_train, Y_train, koopman_kernel):
 
 
 @app.cell
-def _(plt, tsvd):
+def _():
+    koopman_rel_threshold = 1e-2
+    return (koopman_rel_threshold,)
+
+
+@app.cell
+def _(koopman_rel_threshold, plt, tsvd):
     _fig, _ax = plt.subplots(figsize=(6, 4))
     _ax.plot(tsvd.S / tsvd.S[0], ".")
-    _ax.axhline(5.0e-3, color="black", linestyle="--", linewidth=0.8)
+    _ax.axhline(koopman_rel_threshold, color="black", linestyle="--", linewidth=0.8)
     _ax.set(
         xlabel="singular-value index",
         ylabel=r"$\sigma_i^2 / \sigma_1^2$",
@@ -1031,10 +1037,16 @@ def _(plt, tsvd):
 
 
 @app.cell
-def _(KoopmanSpectrumKDMD, kdmd, snapshot_interval_days, tsvd):
+def _(
+    KoopmanSpectrumKDMD,
+    kdmd,
+    koopman_rel_threshold,
+    snapshot_interval_days,
+    tsvd,
+):
     koopman_matrix, U_r, S_r = tsvd.solve_from_factorization(
         kdmd.A,
-        rel_threshold=2e-2,
+        rel_threshold=koopman_rel_threshold,
     )
     koopman_spectrum = KoopmanSpectrumKDMD.from_koopman_matrix(
         koopman_matrix,
