@@ -24,7 +24,7 @@ def _():
 
 @app.cell
 def _(get_data_dir):
-    analysis_mu = "1240"
+    analysis_mu = "1225"
     fname = f"CONTROL_360ppm_T21L10_10000Y_MU_{analysis_mu}"
     state = "spinup"
     output_dir = get_data_dir() / "Plasim" / fname
@@ -158,94 +158,94 @@ def _(diagnostic_colors, diagnostics, plt):
 
 
 @app.cell
-def _():
-    # _diagnostic_years = np.asarray(diagnostics["year"].values, dtype=int)
-    # _ocean_years = np.asarray(ocean_diagnostics["year"].values, dtype=int)
-    # if not np.array_equal(_ocean_years, _diagnostic_years):
-    #     raise ValueError(
-    #         "Ocean and existing PLASIM diagnostics do not have identical years."
-    #     )
+def _(analysis_mu, diagnostic_colors, diagnostics, np, ocean_diagnostics, plt):
+    _diagnostic_years = np.asarray(diagnostics["year"].values, dtype=int)
+    _ocean_years = np.asarray(ocean_diagnostics["year"].values, dtype=int)
+    if not np.array_equal(_ocean_years, _diagnostic_years):
+        raise ValueError(
+            "Ocean and existing PLASIM diagnostics do not have identical years."
+        )
 
-    # _regions = (
-    #     ("global", "Global ocean", diagnostic_colors["global"]),
-    #     (
-    #         "northern_midlatitudes",
-    #         r"Northern midlatitudes (20--60$^\circ$N)",
-    #         diagnostic_colors["northern"],
-    #     ),
-    #     (
-    #         "southern_midlatitudes",
-    #         r"Southern midlatitudes (30--60$^\circ$S)",
-    #         diagnostic_colors["southern"],
-    #     ),
-    # )
-    # _depth_bands = (
-    #     ("0_200m", "0--200 m"),
-    #     ("200_750m", "200--750 m"),
-    #     ("750_2000m", "750--2000 m"),
-    # )
-    # _stationary = ocean_diagnostics["year"] > transients[analysis_mu]
-    # _heat_content = ocean_diagnostics["ocean_heat_content"]
-    # _stationary_mean = _heat_content.where(_stationary, drop=True).mean("year")
-    # _heat_content_anomaly = (_heat_content - _stationary_mean) / 1.0e21
+    _regions = (
+        ("global", "Global ocean", diagnostic_colors["global"]),
+        (
+            "northern_midlatitudes",
+            r"Northern midlatitudes (20--60$^\circ$N)",
+            diagnostic_colors["northern"],
+        ),
+        (
+            "southern_midlatitudes",
+            r"Southern midlatitudes (30--60$^\circ$S)",
+            diagnostic_colors["southern"],
+        ),
+    )
+    _depth_bands = (
+        ("0_200m", "0--200 m"),
+        ("200_750m", "200--750 m"),
+        ("750_2000m", "750--2000 m"),
+    )
+    _stationary = ocean_diagnostics["year"] > 6000#transients[analysis_mu]
+    _heat_content = ocean_diagnostics["ocean_heat_content"]
+    _stationary_mean = _heat_content.where(_stationary, drop=True).mean("year")
+    _heat_content_anomaly = (_heat_content - _stationary_mean) / 1.0e21
 
-    # _fig, _axes = plt.subplots(
-    #     nrows=len(_regions),
-    #     ncols=len(_depth_bands),
-    #     sharex=True,
-    #     figsize=(13, 9),
-    # )
-    # for _row, (_region, _region_label, _color) in enumerate(_regions):
-    #     for _column, (_depth_band, _depth_label) in enumerate(_depth_bands):
-    #         _axis = _axes[_row, _column]
-    #         _is_primary_candidate = (
-    #             _region == "northern_midlatitudes"
-    #             and _depth_band == "200_750m"
-    #         )
-    #         _axis.plot(
-    #             _ocean_years,
-    #             _heat_content_anomaly.sel(
-    #                 ocean_region=_region,
-    #                 depth_band=_depth_band,
-    #             ),
-    #             color=_color,
-    #             linewidth=1.5 if _is_primary_candidate else 1.0,
-    #         )
-    #         _axis.axhline(0.0, color="black", linewidth=0.7, alpha=0.5)
-    #         _axis.axvline(
-    #             transients[analysis_mu],
-    #             color="black",
-    #             linestyle="--",
-    #             linewidth=0.8,
-    #             alpha=0.7,
-    #         )
-    #         if _row == 0:
-    #             _axis.set_title(_depth_label)
-    #         if _column == 0:
-    #             _axis.set_ylabel(_region_label + "\n" + r"$\Delta H$ (ZJ)")
-    #         if _row == len(_regions) - 1:
-    #             _axis.set_xlabel("year")
-    #         if _is_primary_candidate:
-    #             _axis.text(
-    #                 0.98,
-    #                 0.95,
-    #                 "primary candidate",
-    #                 color=_color,
-    #                 ha="right",
-    #                 va="top",
-    #                 transform=_axis.transAxes,
-    #             )
-    #             for _spine in _axis.spines.values():
-    #                 _spine.set_color(_color)
-    #                 _spine.set_linewidth(1.5)
-    #         _axis.ticklabel_format(axis="x", style="plain", useOffset=False)
+    _fig, _axes = plt.subplots(
+        nrows=len(_regions),
+        ncols=len(_depth_bands),
+        sharex=True,
+        figsize=(13, 9),
+    )
+    for _row, (_region, _region_label, _color) in enumerate(_regions):
+        for _column, (_depth_band, _depth_label) in enumerate(_depth_bands):
+            _axis = _axes[_row, _column]
+            _is_primary_candidate = (
+                _region == "northern_midlatitudes"
+                and _depth_band == "200_750m"
+            )
+            _axis.plot(
+                _ocean_years,
+                _heat_content_anomaly.sel(
+                    ocean_region=_region,
+                    depth_band=_depth_band,
+                ),
+                color=_color,
+                linewidth=1.5 if _is_primary_candidate else 1.0,
+            )
+            _axis.axhline(0.0, color="black", linewidth=0.7, alpha=0.5)
+            _axis.axvline(
+                6000,#transients[analysis_mu],
+                color="black",
+                linestyle="--",
+                linewidth=0.8,
+                alpha=0.7,
+            )
+            if _row == 0:
+                _axis.set_title(_depth_label)
+            if _column == 0:
+                _axis.set_ylabel(_region_label + "\n" + r"$\Delta H$ (ZJ)")
+            if _row == len(_regions) - 1:
+                _axis.set_xlabel("year")
+            if _is_primary_candidate:
+                _axis.text(
+                    0.98,
+                    0.95,
+                    "primary candidate",
+                    color=_color,
+                    ha="right",
+                    va="top",
+                    transform=_axis.transAxes,
+                )
+                for _spine in _axis.spines.values():
+                    _spine.set_color(_color)
+                    _spine.set_linewidth(1.5)
+            _axis.ticklabel_format(axis="x", style="plain", useOffset=False)
 
-    # _fig.suptitle(
-    #     "LSG regional ocean heat-content anomalies "
-    #     fr"($\mu={analysis_mu}$; reference: stationary mean)"
-    # )
-    # _fig.tight_layout(rect=(0, 0, 1, 0.96))
-    # _fig
+    _fig.suptitle(
+        "LSG regional ocean heat-content anomalies "
+        fr"($\mu={analysis_mu}$; reference: stationary mean)"
+    )
+    _fig.tight_layout(rect=(0, 0, 1, 0.96))
+    _fig
     return
 
 
@@ -339,7 +339,7 @@ def _():
         "1312" : 4000,
         "1288" : 4000,
         "1265" : 4000,
-        "1240" : 7000,
+        "1240" : 6500,
     }
     return (transients,)
 
@@ -994,7 +994,13 @@ def _(
         sigma=koopman_kernel_bandwidth,
         weights=_kernel_weight,
     )
-    return X_train, Y_train, koopman_kernel, koopman_training_indices
+    return (
+        X_train,
+        Y_train,
+        koopman_kernel,
+        koopman_kernel_bandwidth,
+        koopman_training_indices,
+    )
 
 
 @app.cell
@@ -1089,146 +1095,1241 @@ def _(koopman_eigenvalues_per_year, plt):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ### Direct multi-lag KDMD consistency
+    ### Temperature-only KDMD robustness
 
     Each operator below is fitted directly at its stated lag, rather than
-    obtained by taking powers of the one-year operator.  Stable rates that
-    change with fitting lag indicate memory unresolved by the observed
-    Northern Hemisphere surface-temperature field.
+    obtained by taking powers of the one-year operator. The temperature
+    kernel metric and bandwidth are held fixed, while the fitting lag and
+    TSVD truncation are varied.
+
+    The global-temperature eigenfunction is matched to the reference
+    one-year eigenfunction by its phase-invariant trajectory overlap. Its
+    actual eigenvalue index is retained as a diagnostic: it is expected to
+    remain index 1, but this is checked rather than assumed. Eigenfunctions
+    are centred, phase aligned, and RMS normalized before comparison because
+    their complex phase and amplitude are arbitrary.
     """)
     return
 
 
 @app.cell
 def _():
-    # lag_consistency_lags_years = (1, 2, 3, 5, 10)
-    # lag_consistency_mode_count = 6
-    # lag_consistency_max_training_snapshots = 10_000
+    temperature_robustness_lags_years = (1, 2, 3, 5, 10, 50)
+    temperature_robustness_rel_thresholds = (
+        3.0e-2,
+        2.0e-2,
+        1.5e-2,
+        1.0e-2,
+        7.5e-3,
+        5.0e-3,
+    )
+    temperature_robustness_candidate_mode_count = 6
+    temperature_robustness_max_training_snapshots = 10_000
+    return (
+        temperature_robustness_candidate_mode_count,
+        temperature_robustness_lags_years,
+        temperature_robustness_max_training_snapshots,
+        temperature_robustness_rel_thresholds,
+    )
+
+
+@app.cell
+def _(
+    KernelDMD,
+    KoopmanSpectrumKDMD,
+    TSVDRegularizer,
+    koopman_eigenfunctions,
+    koopman_kernel,
+    koopman_state_anomaly,
+    koopman_temperature_anomaly,
+    northern_mean_surface_temperature,
+    np,
+    temperature_robustness_candidate_mode_count,
+    temperature_robustness_lags_years,
+    temperature_robustness_max_training_snapshots,
+    temperature_robustness_rel_thresholds,
+):
+    from scipy.optimize import linear_sum_assignment
+
+    _years = np.asarray(koopman_temperature_anomaly["year"].values)
+    _state = np.asarray(koopman_state_anomaly, dtype=float)
+    _temperature_coordinate = np.asarray(
+        northern_mean_surface_temperature,
+        dtype=float,
+    ).copy()
+    _temperature_coordinate -= _temperature_coordinate.mean()
+    _temperature_norm = np.linalg.norm(_temperature_coordinate)
+    if not np.isfinite(_temperature_norm) or _temperature_norm == 0.0:
+        raise ValueError("NH mean temperature must have finite non-zero variance.")
+
+    # Define the reference using eigenfunction 1 from the principal one-year
+    # calculation. Rotate it so its real part is positively correlated with
+    # NH mean temperature, then remove its arbitrary amplitude.
+    _reference = np.asarray(
+        koopman_eigenfunctions[:, 1],
+        dtype=complex,
+    ).copy()
+    _reference -= _reference.mean()
+    _reference_temperature_inner_product = np.vdot(
+        _temperature_coordinate,
+        _reference,
+    )
+    if np.abs(_reference_temperature_inner_product) == 0.0:
+        raise ValueError(
+            "Reference eigenfunction 1 has zero NH-temperature projection."
+        )
+    _reference *= np.exp(
+        -1j * np.angle(_reference_temperature_inner_product)
+    )
+    _reference_norm = np.linalg.norm(_reference)
+    if not np.isfinite(_reference_norm) or _reference_norm == 0.0:
+        raise ValueError("Reference eigenfunction 1 is degenerate.")
+    _reference /= _reference_norm
+
+    _shape = (
+        len(temperature_robustness_lags_years),
+        len(temperature_robustness_rel_thresholds),
+    )
+    _rates = np.full(_shape, np.nan + 1j * np.nan, dtype=complex)
+    _overlaps = np.full(_shape, np.nan, dtype=float)
+    _temperature_correlations = np.full(_shape, np.nan, dtype=float)
+    _mode_indices = np.full(_shape, -1, dtype=int)
+    _retained_ranks = np.full(_shape, -1, dtype=int)
+    _historical_mode_count = 4
+    _historical_rates = np.full(
+        _shape + (_historical_mode_count,),
+        np.nan + 1j * np.nan,
+        dtype=complex,
+    )
+    _historical_mode_indices = np.full(
+        _shape + (_historical_mode_count,),
+        -1,
+        dtype=int,
+    )
+    _historical_temperature_correlations = np.full(
+        _shape + (_historical_mode_count,),
+        np.nan,
+        dtype=float,
+    )
+    _historical_reference_rates = [
+        None for _ in temperature_robustness_rel_thresholds
+    ]
+
+    # Store only one-dimensional conditional profiles, not the spectra or
+    # full eigenfunction arrays from every fit.
+    _temperature_standardized = _temperature_coordinate / np.std(
+        _temperature_coordinate
+    )
+    _bin_edges = np.quantile(
+        _temperature_standardized,
+        np.linspace(0.0, 1.0, 22),
+    )
+    _bin_edges = np.unique(_bin_edges)
+    if _bin_edges.size < 4:
+        raise ValueError("Too few distinct NH-temperature bins for robustness plot.")
+    _bin_index = np.clip(
+        np.digitize(_temperature_standardized, _bin_edges[1:-1]),
+        0,
+        _bin_edges.size - 2,
+    )
+    _profile_temperature = np.asarray(
+        [
+            _temperature_standardized[_bin_index == _index].mean()
+            for _index in range(_bin_edges.size - 1)
+        ]
+    )
+    _profiles = np.full(
+        _shape + (_bin_edges.size - 1,),
+        np.nan,
+        dtype=float,
+    )
+
+    _rng = np.random.default_rng(seed=0)
+    for _lag_position, _lag_years in enumerate(
+        temperature_robustness_lags_years
+    ):
+        _snapshot_indices = np.flatnonzero(
+            _years[_lag_years:] - _years[:-_lag_years] == _lag_years
+        )
+        _training_count = min(
+            temperature_robustness_max_training_snapshots,
+            _snapshot_indices.size,
+        )
+        if _training_count == 0:
+            raise ValueError(f"No valid snapshot pairs at lag {_lag_years} years.")
+        if _training_count == _snapshot_indices.size:
+            _origins = _snapshot_indices
+        else:
+            _origins = _snapshot_indices[
+                _rng.choice(
+                    _snapshot_indices.size,
+                    size=_training_count,
+                    replace=False,
+                )
+            ]
+
+        _kdmd = KernelDMD(kernel=koopman_kernel)
+        _kdmd.fit_snapshots(
+            X=_state[_origins],
+            Y=_state[_origins + _lag_years],
+            fit_kernel=False,
+            show_progress=False,
+        )
+        _tsvd = TSVDRegularizer()
+        _tsvd.factorize(
+            _kdmd.G,
+            method="eigsh",
+            symmetrize=False,
+            rel_threshold=1.0e-4,
+            max_rank=512,
+        )
+
+        for _threshold_position, _threshold in enumerate(
+            temperature_robustness_rel_thresholds
+        ):
+            _koopman_matrix, _U_r, _S_r = _tsvd.solve_from_factorization(
+                _kdmd.A,
+                rel_threshold=_threshold,
+            )
+            _spectrum = KoopmanSpectrumKDMD.from_koopman_matrix(
+                _koopman_matrix,
+                kernel=koopman_kernel,
+                reference_data=_kdmd.reference_data,
+                U_r=_U_r,
+                S_r=_S_r,
+            )
+            _rates_per_year = (
+                _spectrum.continuous_time_eigenvalues(360.0 * _lag_years)
+                * 360.0
+            )
+            _stationary_index = int(
+                np.argmin(np.abs(_spectrum.eigenvalues - 1.0))
+            )
+            _all_eigenfunctions = _spectrum.evaluate_eigenfunctions(
+                _state,
+                batch_size=5_000,
+            )
+            _all_eigenfunctions -= _all_eigenfunctions.mean(
+                axis=0,
+                keepdims=True,
+            )
+
+            _candidate_indices = np.asarray(
+                [
+                    _index
+                    for _index in range(
+                        min(
+                            _spectrum.eigenvalues.size,
+                            temperature_robustness_candidate_mode_count + 1,
+                        )
+                    )
+                    if _index != _stationary_index
+                ],
+                dtype=int,
+            )
+            if _candidate_indices.size == 0:
+                raise ValueError(
+                    f"No non-stationary modes at lag {_lag_years}, "
+                    f"threshold {_threshold:g}."
+                )
+            _candidate_eigenfunctions = _all_eigenfunctions[:, _candidate_indices]
+            _candidate_norms = np.linalg.norm(
+                _candidate_eigenfunctions,
+                axis=0,
+            )
+            _candidate_overlaps = np.abs(
+                _reference.conj() @ _candidate_eigenfunctions
+            ) / _candidate_norms
+            _matched_position = int(np.nanargmax(_candidate_overlaps))
+            _matched_index = int(_candidate_indices[_matched_position])
+            _matched = _candidate_eigenfunctions[:, _matched_position]
+            _matched_norm = _candidate_norms[_matched_position]
+            _phase = np.exp(
+                -1j * np.angle(np.vdot(_reference, _matched))
+            )
+            _matched = _matched * _phase / _matched_norm
+
+            _rates[_lag_position, _threshold_position] = _rates_per_year[
+                _matched_index
+            ]
+            _overlaps[_lag_position, _threshold_position] = (
+                _candidate_overlaps[_matched_position]
+            )
+            _temperature_correlations[
+                _lag_position,
+                _threshold_position,
+            ] = np.abs(np.vdot(_temperature_coordinate, _matched)) / (
+                _temperature_norm * np.linalg.norm(_matched)
+            )
+            _mode_indices[_lag_position, _threshold_position] = _matched_index
+            _retained_ranks[_lag_position, _threshold_position] = _S_r.size
+
+            _matched_rms = np.sqrt(np.mean(np.abs(_matched) ** 2))
+            _matched_standardized = _matched / _matched_rms
+            _profiles[_lag_position, _threshold_position] = np.asarray(
+                [
+                    _matched_standardized[_bin_index == _index].real.mean()
+                    for _index in range(_bin_edges.size - 1)
+                ]
+            )
+
+            # Reproduce the historical diagnostic exactly: at the one-year
+            # reference lag, retain the first four stable modes ordered by
+            # decay rate; at later lags, use a one-to-one assignment based
+            # only on eigenvalue proximity. Unlike the old plot, retain the
+            # raw spectral index and temperature correlation so that a branch
+            # switch is visible.
+            _historical_candidate_indices = np.flatnonzero(
+                (np.arange(_rates_per_year.size) != _stationary_index)
+                & (np.abs(_spectrum.eigenvalues) < 1.0 - 1.0e-10)
+                & np.isfinite(_rates_per_year.real)
+                & np.isfinite(_rates_per_year.imag)
+            )
+            _historical_candidate_indices = _historical_candidate_indices[
+                np.argsort(
+                    _rates_per_year[_historical_candidate_indices].real
+                )[::-1]
+            ]
+            if _historical_candidate_indices.size < _historical_mode_count:
+                raise ValueError(
+                    f"Only {_historical_candidate_indices.size} stable modes are "
+                    f"available at lag {_lag_years}, threshold {_threshold:g}."
+                )
+            _historical_candidate_rates = _rates_per_year[
+                _historical_candidate_indices
+            ]
+            if _lag_position == 0:
+                _historical_reference_rates[_threshold_position] = (
+                    _historical_candidate_rates[:_historical_mode_count].copy()
+                )
+                _matched_candidate_positions = np.arange(
+                    _historical_mode_count,
+                    dtype=int,
+                )
+            else:
+                _assignment_rows, _assignment_columns = linear_sum_assignment(
+                    np.abs(
+                        _historical_reference_rates[_threshold_position][:, None]
+                        - _historical_candidate_rates[None, :]
+                    )
+                )
+                _matched_candidate_positions = np.empty(
+                    _historical_mode_count,
+                    dtype=int,
+                )
+                _matched_candidate_positions[_assignment_rows] = (
+                    _assignment_columns
+                )
+            _historical_matched_indices = _historical_candidate_indices[
+                _matched_candidate_positions
+            ]
+            _historical_matched_eigenfunctions = _all_eigenfunctions[
+                :,
+                _historical_matched_indices,
+            ]
+            _historical_matched_norms = np.linalg.norm(
+                _historical_matched_eigenfunctions,
+                axis=0,
+            )
+            _historical_rates[
+                _lag_position,
+                _threshold_position,
+            ] = _rates_per_year[_historical_matched_indices]
+            _historical_mode_indices[
+                _lag_position,
+                _threshold_position,
+            ] = _historical_matched_indices
+            _historical_temperature_correlations[
+                _lag_position,
+                _threshold_position,
+            ] = np.abs(
+                _temperature_coordinate @ _historical_matched_eigenfunctions
+            ) / (_temperature_norm * _historical_matched_norms)
+
+    temperature_robustness_rates = _rates
+    temperature_robustness_eigenfunction_overlaps = _overlaps
+    temperature_robustness_temperature_correlations = _temperature_correlations
+    temperature_robustness_mode_indices = _mode_indices
+    temperature_robustness_retained_ranks = _retained_ranks
+    temperature_robustness_profile_temperature = _profile_temperature
+    temperature_robustness_profiles = _profiles
+    temperature_historical_matched_rates = _historical_rates
+    temperature_historical_matched_mode_indices = _historical_mode_indices
+    temperature_historical_matched_temperature_correlations = (
+        _historical_temperature_correlations
+    )
+    return (
+        temperature_historical_matched_mode_indices,
+        temperature_historical_matched_rates,
+        temperature_historical_matched_temperature_correlations,
+        temperature_robustness_eigenfunction_overlaps,
+        temperature_robustness_mode_indices,
+        temperature_robustness_profile_temperature,
+        temperature_robustness_profiles,
+        temperature_robustness_rates,
+        temperature_robustness_retained_ranks,
+        temperature_robustness_temperature_correlations,
+    )
+
+
+@app.cell
+def _(
+    np,
+    plt,
+    temperature_robustness_eigenfunction_overlaps,
+    temperature_robustness_lags_years,
+    temperature_robustness_mode_indices,
+    temperature_robustness_rates,
+    temperature_robustness_rel_thresholds,
+    temperature_robustness_retained_ranks,
+    temperature_robustness_temperature_correlations,
+):
+    _fields = (
+        (
+            temperature_robustness_rates.real,
+            r"$\mathrm{Re}\,\lambda$ (year$^{-1}$)",
+            ".3f",
+            "coolwarm",
+        ),
+        (
+            np.abs(temperature_robustness_rates.imag),
+            r"$|\mathrm{Im}\,\lambda|$ (year$^{-1}$)",
+            ".3f",
+            "magma",
+        ),
+        (
+            temperature_robustness_eigenfunction_overlaps,
+            "eigenfunction overlap with reference",
+            ".2f",
+            "viridis",
+        ),
+        (
+            temperature_robustness_temperature_correlations,
+            r"$|\mathrm{corr}(\phi,\langle T_N\rangle)|$",
+            ".2f",
+            "viridis",
+        ),
+        (
+            temperature_robustness_mode_indices,
+            "matched eigenvalue index",
+            "d",
+            "tab20",
+        ),
+        (
+            temperature_robustness_retained_ranks,
+            "retained KDMD rank",
+            "d",
+            "plasma",
+        ),
+    )
+    _threshold_labels = [
+        f"{_threshold:g}"
+        for _threshold in temperature_robustness_rel_thresholds
+    ]
+    _lag_labels = [str(_lag) for _lag in temperature_robustness_lags_years]
+    _fig, _axes = plt.subplots(2, 3, figsize=(16, 9), constrained_layout=True)
+    for _axis, (_values, _title, _format, _cmap) in zip(
+        _axes.ravel(),
+        _fields,
+    ):
+        _image = _axis.imshow(_values, aspect="auto", cmap=_cmap)
+        _value_range = float(np.nanmax(_values) - np.nanmin(_values))
+        _midpoint = float(np.nanmin(_values) + 0.5 * _value_range)
+        for _row in range(_values.shape[0]):
+            for _column in range(_values.shape[1]):
+                _value = _values[_row, _column]
+                _text_color = "white" if _value < _midpoint else "black"
+                _axis.text(
+                    _column,
+                    _row,
+                    format(_value, _format),
+                    ha="center",
+                    va="center",
+                    color=_text_color,
+                    fontsize=8,
+                )
+        _axis.set(
+            xticks=np.arange(len(_threshold_labels)),
+            xticklabels=_threshold_labels,
+            yticks=np.arange(len(_lag_labels)),
+            yticklabels=_lag_labels,
+            xlabel="relative TSVD threshold",
+            ylabel="direct fitting lag (years)",
+            title=_title,
+        )
+        _fig.colorbar(_image, ax=_axis, shrink=0.82)
+    _fig.suptitle(
+        "Temperature-only leading-mode robustness "
+        "(reference: lag 1 year, eigenvalue index 1)"
+    )
+    _fig
+    return
+
+
+@app.cell
+def _(
+    analysis_mu,
+    koopman_rel_threshold,
+    np,
+    plt,
+    temperature_historical_matched_mode_indices,
+    temperature_historical_matched_rates,
+    temperature_historical_matched_temperature_correlations,
+    temperature_robustness_lags_years,
+    temperature_robustness_rates,
+    temperature_robustness_rel_thresholds,
+    transients,
+):
+    _thresholds = np.asarray(temperature_robustness_rel_thresholds, dtype=float)
+    _threshold_position = int(
+        np.argmin(np.abs(_thresholds - koopman_rel_threshold))
+    )
+    _lags = np.asarray(temperature_robustness_lags_years, dtype=int)
+    _x = np.arange(_lags.size)
+    _rates = temperature_historical_matched_rates[:, _threshold_position]
+    _indices = temperature_historical_matched_mode_indices[
+        :, _threshold_position
+    ]
+    _temperature_correlations = (
+        temperature_historical_matched_temperature_correlations[
+            :, _threshold_position
+        ]
+    )
+    _true_leading_rates = temperature_robustness_rates[
+        :, _threshold_position
+    ]
+
+    _fig, (_rate_axis, _index_axis, _correlation_axis) = plt.subplots(
+        1,
+        3,
+        figsize=(17, 4.8),
+        sharex=True,
+    )
+    _colors = plt.get_cmap("tab10").colors
+    for _branch in range(_rates.shape[1]):
+        _color = _colors[_branch]
+        _label = f"historical matched branch {_branch + 1}"
+        _rate_axis.plot(
+            _x,
+            _rates[:, _branch].real,
+            "o-",
+            color=_color,
+            linewidth=1.8,
+            label=_label,
+        )
+        _index_axis.plot(
+            _x,
+            _indices[:, _branch],
+            "o-",
+            color=_color,
+            linewidth=1.8,
+            label=f"branch {_branch + 1}",
+        )
+        _correlation_axis.plot(
+            _x,
+            _temperature_correlations[:, _branch],
+            "o-",
+            color=_color,
+            linewidth=1.8,
+            label=f"branch {_branch + 1}",
+        )
+    _rate_axis.plot(
+        _x,
+        _true_leading_rates.real,
+        "kD--",
+        linewidth=1.5,
+        markersize=5,
+        label="eigenfunction-tracked leading mode",
+    )
+    _rate_axis.axhline(0.0, color="black", linewidth=0.7, alpha=0.5)
+    _rate_axis.set(
+        ylabel=r"$\mathrm{Re}\,\lambda$ (year$^{-1}$)",
+        title="Historical rate matching",
+    )
+    _rate_axis.legend(fontsize=7)
+    _index_axis.set(
+        ylabel="raw eigenvalue index",
+        title="Which eigenvalue was selected?",
+        yticks=np.arange(
+            int(np.nanmax(_indices)) + 1,
+        ),
+    )
+    _index_axis.legend(fontsize=7)
+    _correlation_axis.set(
+        ylabel=r"$|\mathrm{corr}(\phi,\langle T_N\rangle)|$",
+        title="Does its eigenfunction remain temperature-like?",
+        ylim=(0.0, 1.05),
+    )
+    _correlation_axis.legend(fontsize=7)
+    for _axis in (_rate_axis, _index_axis, _correlation_axis):
+        _axis.set(
+            xticks=_x,
+            xticklabels=[str(_lag) for _lag in _lags],
+            xlabel="direct fitting lag (years)",
+        )
+        _axis.grid(alpha=0.3, linestyle="--")
+    _fig.suptitle(
+        "Reproduction of the historical multi-lag matching diagnostic "
+        f"(threshold {koopman_rel_threshold:g}, "
+        f"current post-{transients[analysis_mu]} window)"
+    )
+    _fig.tight_layout(rect=(0, 0, 1, 0.94))
+    _fig
+    return
+
+
+@app.cell
+def _(
+    koopman_rel_threshold,
+    np,
+    plt,
+    temperature_robustness_eigenfunction_overlaps,
+    temperature_robustness_lags_years,
+    temperature_robustness_mode_indices,
+    temperature_robustness_rates,
+    temperature_robustness_rel_thresholds,
+    temperature_robustness_retained_ranks,
+    temperature_robustness_temperature_correlations,
+):
+    _thresholds = np.asarray(temperature_robustness_rel_thresholds, dtype=float)
+    _threshold_position = int(
+        np.argmin(np.abs(_thresholds - koopman_rel_threshold))
+    )
+    _selected_threshold = float(_thresholds[_threshold_position])
+    if not np.isclose(_selected_threshold, koopman_rel_threshold):
+        raise ValueError(
+            "The principal KDMD truncation is absent from the robustness sweep."
+        )
+
+    _lags = np.asarray(temperature_robustness_lags_years, dtype=float)
+    _rates = temperature_robustness_rates[:, _threshold_position]
+    _overlaps = temperature_robustness_eigenfunction_overlaps[
+        :, _threshold_position
+    ]
+    _temperature_correlations = temperature_robustness_temperature_correlations[
+        :, _threshold_position
+    ]
+    _mode_indices = temperature_robustness_mode_indices[:, _threshold_position]
+    _retained_ranks = temperature_robustness_retained_ranks[
+        :, _threshold_position
+    ]
+
+    _fig, (_rate_axis, _shape_axis) = plt.subplots(
+        1,
+        2,
+        figsize=(13, 4.8),
+    )
+    _rate_axis.plot(
+        _lags,
+        _rates.real,
+        "o-",
+        linewidth=2.0,
+        label=r"$\mathrm{Re}\,\lambda$",
+    )
+    _rate_axis.plot(
+        _lags,
+        _rates.imag,
+        "s--",
+        linewidth=1.5,
+        label=r"$\mathrm{Im}\,\lambda$",
+    )
+    _rate_axis.axhline(
+        _rates[0].real,
+        color="0.4",
+        linestyle=":",
+        linewidth=1.0,
+        label="one-year decay rate",
+    )
+    _rate_axis.axhline(0.0, color="black", linewidth=0.7, alpha=0.5)
+    for _lag, _rate, _mode_index, _rank in zip(
+        _lags,
+        _rates,
+        _mode_indices,
+        _retained_ranks,
+    ):
+        _rate_axis.annotate(
+            f"j={_mode_index}, r={_rank}",
+            xy=(_lag, _rate.real),
+            xytext=(0, 8),
+            textcoords="offset points",
+            ha="center",
+            fontsize=8,
+        )
+    _rate_axis.set(
+        xlabel="direct fitting lag (years)",
+        ylabel=r"continuous-time eigenvalue (year$^{-1}$)",
+        title="Generator eigenvalue",
+    )
+    _rate_axis.grid(alpha=0.3, linestyle="--")
+    _rate_axis.legend(fontsize=8)
+
+    _shape_axis.plot(
+        _lags,
+        _overlaps,
+        "o-",
+        linewidth=2.0,
+        label="overlap with one-year eigenfunction",
+    )
+    _shape_axis.plot(
+        _lags,
+        _temperature_correlations,
+        "s--",
+        linewidth=1.7,
+        label=r"$|\mathrm{corr}(\phi,\langle T_N\rangle)|$",
+    )
+    _shape_axis.set(
+        xlabel="direct fitting lag (years)",
+        ylabel="similarity",
+        title="Identity of the tracked eigenfunction",
+        ylim=(0.0, 1.05),
+    )
+    _shape_axis.grid(alpha=0.3, linestyle="--")
+    _shape_axis.legend(fontsize=8)
+
+    _fig.suptitle(
+        "Leading temperature mode versus fitting lag "
+        f"(relative TSVD threshold {_selected_threshold:g})"
+    )
+    _fig.tight_layout(rect=(0, 0, 1, 0.94))
+    _fig
+    return
+
+
+@app.cell
+def _(
+    koopman_rel_threshold,
+    np,
+    plt,
+    temperature_robustness_lags_years,
+    temperature_robustness_profile_temperature,
+    temperature_robustness_profiles,
+    temperature_robustness_rel_thresholds,
+):
+    _lag_reference_position = int(
+        np.argmin(np.abs(np.asarray(temperature_robustness_lags_years) - 1))
+    )
+    _threshold_reference_position = int(
+        np.argmin(
+            np.abs(
+                np.asarray(temperature_robustness_rel_thresholds)
+                - koopman_rel_threshold
+            )
+        )
+    )
+    _fig, (_threshold_axis, _lag_axis) = plt.subplots(
+        1,
+        2,
+        figsize=(13, 4.5),
+        sharex=True,
+        sharey=True,
+    )
+    for _threshold_position, _threshold in enumerate(
+        temperature_robustness_rel_thresholds
+    ):
+        _threshold_axis.plot(
+            temperature_robustness_profile_temperature,
+            temperature_robustness_profiles[
+                _lag_reference_position,
+                _threshold_position,
+            ],
+            marker="o",
+            markersize=3,
+            label=f"{_threshold:g}",
+        )
+    for _lag_position, _lag in enumerate(temperature_robustness_lags_years):
+        _lag_axis.plot(
+            temperature_robustness_profile_temperature,
+            temperature_robustness_profiles[
+                _lag_position,
+                _threshold_reference_position,
+            ],
+            marker="o",
+            markersize=3,
+            label=f"{_lag} years",
+        )
+    _threshold_axis.set_title("Truncation sensitivity at one-year lag")
+    _lag_axis.set_title(
+        f"Lag sensitivity at threshold "
+        f"{temperature_robustness_rel_thresholds[_threshold_reference_position]:g}"
+    )
+    for _axis in (_threshold_axis, _lag_axis):
+        _axis.axhline(0.0, color="black", linewidth=0.7, alpha=0.5)
+        _axis.set_xlabel(r"standardized NH $\langle T_s\rangle$")
+        _axis.grid(alpha=0.25)
+        _axis.legend(fontsize=8)
+    _threshold_axis.set_ylabel(
+        r"phase-aligned standardized $\mathrm{Re}\,\phi$"
+    )
+    _fig.suptitle("Leading temperature eigenfunction conditional profiles")
+    _fig.tight_layout(rect=(0, 0, 1, 0.94))
+    _fig
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Tentative thermocline-memory augmentation
+
+    This controlled experiment augments the 16-latitude Northern Hemisphere
+    surface-temperature field with one scalar: detrended ocean heat content
+    in the Northern midlatitudes (20°--60°N) and 200--750 m depth range. The
+    scalar is standardized to unit variance. The temperature contribution to
+    the Gaussian-kernel distance is kept exactly equal to the temperature-only
+    calculation, while `ocean_augmentation_kernel_weight` controls the added
+    ocean contribution.
+
+    The plotted mode is selected by overlap with the original temperature-only
+    eigenfunction 1. Therefore the comparison asks whether resolving this
+    ocean-memory coordinate makes the *same global-temperature mode* more
+    consistent across fitting lags; it does not silently replace it with a
+    different slow ocean mode.
+    """)
     return
 
 
 @app.cell
 def _():
-    # from gsebm.reduced_dynamics import match_rates as _match_rates
+    ocean_augmentation_kernel_weight = 0.1
+    ocean_augmentation_kernel_weights = (0.0, 0.01, 0.03, 0.1, 0.3, 1.0)
+    ocean_augmentation_fixed_rank = 11
+    return (
+        ocean_augmentation_fixed_rank,
+        ocean_augmentation_kernel_weight,
+        ocean_augmentation_kernel_weights,
+    )
 
-    # if lag_consistency_mode_count < 1:
-    #     raise ValueError("lag_consistency_mode_count must be at least one.")
 
-    # _years = koopman_temperature_anomaly["year"].values
-    # _state_anomaly = koopman_state_anomaly
-    # _rng = np.random.default_rng(seed=1)
-    # _reference_rates = None
-    # _matched_rates = []
-    # lag_consistency_retained_ranks = []
+@app.cell
+def _(
+    detrended_ocean_heat_content,
+    koopman_state_anomaly,
+    np,
+    ocean_analysis_years,
+    ocean_diagnostics,
+    stationary_zonal_temperature,
+):
+    _region_index = int(
+        np.flatnonzero(
+            ocean_diagnostics["ocean_region"].values
+            == "northern_midlatitudes"
+        )[0]
+    )
+    _depth_index = int(
+        np.flatnonzero(
+            ocean_diagnostics["depth_band"].values == "200_750m"
+        )[0]
+    )
+    _ocean_anomaly = np.asarray(
+        detrended_ocean_heat_content[:, _region_index, _depth_index],
+        dtype=float,
+    )
+    _temperature_years = np.asarray(
+        stationary_zonal_temperature["year"].values,
+        dtype=int,
+    )
+    if not np.array_equal(ocean_analysis_years, _temperature_years):
+        raise ValueError(
+            "Thermocline heat content and temperature years are not aligned."
+        )
+    if not np.isfinite(_ocean_anomaly).all():
+        raise ValueError("Thermocline heat content contains non-finite values.")
+    _ocean_scale = float(_ocean_anomaly.std())
+    if not np.isfinite(_ocean_scale) or _ocean_scale == 0.0:
+        raise ValueError("Thermocline heat content has zero or invalid variance.")
+    ocean_augmentation_coordinate = (
+        _ocean_anomaly - _ocean_anomaly.mean()
+    ) / _ocean_scale
+    ocean_augmented_state_anomaly = np.column_stack(
+        (koopman_state_anomaly, ocean_augmentation_coordinate)
+    )
+    return ocean_augmentation_coordinate, ocean_augmented_state_anomaly
 
-    # for _lag_years in lag_consistency_lags_years:
-    #     _snapshot_indices = np.flatnonzero(
-    #         _years[_lag_years:] - _years[:-_lag_years] == _lag_years
-    #     )
-    #     _training_count = min(
-    #         lag_consistency_max_training_snapshots,
-    #         _snapshot_indices.size,
-    #     )
-    #     if _training_count == 0:
-    #         raise ValueError(f"No valid snapshot pairs for lag {_lag_years} years.")
-    #     _training_indices = _rng.choice(
-    #         _snapshot_indices.size,
-    #         size=_training_count,
-    #         replace=False,
-    #     )
-    #     _origins = _snapshot_indices[_training_indices]
-    #     _kdmd = KernelDMD(kernel=koopman_kernel)
-    #     _kdmd.fit_snapshots(
-    #         X=_state_anomaly[_origins],
-    #         Y=_state_anomaly[_origins + _lag_years],
-    #         fit_kernel=False,
-    #         show_progress=False,
-    #     )
-    #     _tsvd = TSVDRegularizer()
-    #     _tsvd.factorize(
-    #         _kdmd.G,
-    #         method="eigsh",
-    #         symmetrize=False,
-    #         rel_threshold=1.0e-4,
-    #         max_rank=512,
-    #     )
-    #     _koopman_matrix, _U_r, _S_r = _tsvd.solve_from_factorization(
-    #         _kdmd.A,
-    #         rel_threshold=1.0e-2,
-    #     )
-    #     _spectrum = KoopmanSpectrumKDMD.from_koopman_matrix(
-    #         _koopman_matrix,
-    #         kernel=koopman_kernel,
-    #         reference_data=_kdmd.reference_data,
-    #         U_r=_U_r,
-    #         S_r=_S_r,
-    #     )
-    #     _rates_per_year = (
-    #         _spectrum.continuous_time_eigenvalues(360.0 * _lag_years) * 360.0
-    #     )
-    #     _stationary_index = int(np.argmin(np.abs(_spectrum.eigenvalues - 1.0)))
-    #     _candidate_indices = np.flatnonzero(
-    #         (np.arange(_rates_per_year.size) != _stationary_index)
-    #         & (np.abs(_spectrum.eigenvalues) < 1.0 - 1.0e-10)
-    #         & np.isfinite(_rates_per_year.real)
-    #         & np.isfinite(_rates_per_year.imag)
-    #     )
-    #     _candidate_indices = _candidate_indices[
-    #         np.argsort(_rates_per_year[_candidate_indices].real)[::-1]
-    #     ]
-    #     if _candidate_indices.size < lag_consistency_mode_count:
-    #         raise ValueError(
-    #             f"Only {_candidate_indices.size} stable non-stationary modes are "
-    #             f"available at lag {_lag_years} years."
-    #         )
-    #     _candidate_rates = _rates_per_year[_candidate_indices]
-    #     if _reference_rates is None:
-    #         _reference_rates = _candidate_rates[:lag_consistency_mode_count]
-    #         _matched_rates.append(_reference_rates)
-    #     else:
-    #         _matched_rates.append(
-    #             _match_rates(_reference_rates, _candidate_rates)
-    #         )
-    #     lag_consistency_retained_ranks.append(_S_r.size)
 
-    # direct_lag_koopman_rates = np.stack(_matched_rates, axis=0)
-    # lag_consistency_retained_ranks = np.asarray(lag_consistency_retained_ranks)
+@app.cell
+def _(
+    KernelDMD,
+    KoopmanSpectrumKDMD,
+    TSVDRegularizer,
+    WeightedGaussianKernel,
+    koopman_eigenfunctions,
+    koopman_kernel_bandwidth,
+    koopman_latitude_weights,
+    northern_mean_surface_temperature,
+    np,
+    ocean_augmentation_coordinate,
+    ocean_augmentation_fixed_rank,
+    ocean_augmentation_kernel_weight,
+    ocean_augmentation_kernel_weights,
+    ocean_augmented_state_anomaly,
+    stationary_zonal_temperature,
+    temperature_robustness_lags_years,
+    temperature_robustness_max_training_snapshots,
+):
+    _state = np.asarray(ocean_augmented_state_anomaly, dtype=float)
+    _years = np.asarray(stationary_zonal_temperature["year"].values, dtype=int)
+    _temperature_coordinate = np.asarray(
+        northern_mean_surface_temperature,
+        dtype=float,
+    ).copy()
+    _temperature_coordinate -= _temperature_coordinate.mean()
+    _temperature_norm = np.linalg.norm(_temperature_coordinate)
+    _ocean_coordinate = np.asarray(
+        ocean_augmentation_coordinate,
+        dtype=float,
+    )
+    _ocean_norm = np.linalg.norm(_ocean_coordinate)
+
+    _reference = np.asarray(
+        koopman_eigenfunctions[:, 1],
+        dtype=complex,
+    ).copy()
+    _reference -= _reference.mean()
+    _reference_temperature_inner_product = np.vdot(
+        _temperature_coordinate,
+        _reference,
+    )
+    _reference *= np.exp(
+        -1j * np.angle(_reference_temperature_inner_product)
+    )
+    _reference /= np.linalg.norm(_reference)
+
+    _temperature_weights = (
+        np.asarray(koopman_latitude_weights.values, dtype=float)
+        / koopman_kernel_bandwidth**2
+    )
+    _lags = tuple(temperature_robustness_lags_years)
+    _ocean_weights = tuple(ocean_augmentation_kernel_weights)
+    if ocean_augmentation_kernel_weight not in _ocean_weights:
+        raise ValueError(
+            "The selected ocean kernel weight must be included in the sweep."
+        )
+    _shape = (len(_ocean_weights), len(_lags))
+    _rates = np.full(_shape, np.nan + 1j * np.nan, dtype=complex)
+    _overlaps = np.full(_shape, np.nan, dtype=float)
+    _temperature_correlations = np.full(_shape, np.nan, dtype=float)
+    _ocean_correlations = np.full(_shape, np.nan, dtype=float)
+    _mode_indices = np.full(_shape, -1, dtype=int)
+    _retained_ranks = np.full(_shape, -1, dtype=int)
+    _rng = np.random.default_rng(seed=0)
+
+    for _weight_position, _ocean_weight in enumerate(_ocean_weights):
+        _augmented_kernel_weights = np.concatenate(
+            (
+                _temperature_weights,
+                np.asarray([_ocean_weight], dtype=float),
+            )
+        )
+        _augmented_kernel = WeightedGaussianKernel(
+            sigma=1.0,
+            weights=_augmented_kernel_weights,
+        )
+        for _lag_position, _lag_years in enumerate(_lags):
+            _snapshot_indices = np.flatnonzero(
+                _years[_lag_years:] - _years[:-_lag_years] == _lag_years
+            )
+            _training_count = min(
+                temperature_robustness_max_training_snapshots,
+                _snapshot_indices.size,
+            )
+            if _training_count == _snapshot_indices.size:
+                _origins = _snapshot_indices
+            else:
+                _origins = _snapshot_indices[
+                    _rng.choice(
+                        _snapshot_indices.size,
+                        size=_training_count,
+                        replace=False,
+                    )
+                ]
+
+            _kdmd = KernelDMD(kernel=_augmented_kernel)
+            _kdmd.fit_snapshots(
+                X=_state[_origins],
+                Y=_state[_origins + _lag_years],
+                fit_kernel=False,
+                show_progress=False,
+            )
+            _tsvd = TSVDRegularizer()
+            _tsvd.factorize(
+                _kdmd.G,
+                method="eigsh",
+                symmetrize=False,
+                rank=ocean_augmentation_fixed_rank,
+            )
+            _koopman_matrix, _U_r, _S_r = _tsvd.solve_from_factorization(
+                _kdmd.A,
+                rank=ocean_augmentation_fixed_rank,
+            )
+            _spectrum = KoopmanSpectrumKDMD.from_koopman_matrix(
+                _koopman_matrix,
+                kernel=_augmented_kernel,
+                reference_data=_kdmd.reference_data,
+                U_r=_U_r,
+                S_r=_S_r,
+            )
+            _rates_per_year = (
+                _spectrum.continuous_time_eigenvalues(360.0 * _lag_years)
+                * 360.0
+            )
+            _stationary_index = int(
+                np.argmin(np.abs(_spectrum.eigenvalues - 1.0))
+            )
+            _candidate_indices = np.asarray(
+                [
+                    _index
+                    for _index in range(_spectrum.eigenvalues.size)
+                    if _index != _stationary_index
+                ],
+                dtype=int,
+            )
+            _candidate_eigenfunctions = _spectrum.evaluate_eigenfunctions(
+                _state,
+                batch_size=5_000,
+            )[:, _candidate_indices]
+            _candidate_eigenfunctions -= _candidate_eigenfunctions.mean(
+                axis=0,
+                keepdims=True,
+            )
+            _candidate_norms = np.linalg.norm(
+                _candidate_eigenfunctions,
+                axis=0,
+            )
+            _candidate_overlaps = np.abs(
+                _reference.conj() @ _candidate_eigenfunctions
+            ) / _candidate_norms
+            _matched_position = int(np.nanargmax(_candidate_overlaps))
+            _matched_index = int(_candidate_indices[_matched_position])
+            _matched = _candidate_eigenfunctions[:, _matched_position]
+            _matched_norm = _candidate_norms[_matched_position]
+
+            _rates[_weight_position, _lag_position] = _rates_per_year[
+                _matched_index
+            ]
+            _overlaps[_weight_position, _lag_position] = (
+                _candidate_overlaps[_matched_position]
+            )
+            _temperature_correlations[_weight_position, _lag_position] = np.abs(
+                _temperature_coordinate @ _matched
+            ) / (_temperature_norm * _matched_norm)
+            _ocean_correlations[_weight_position, _lag_position] = np.abs(
+                _ocean_coordinate @ _matched
+            ) / (_ocean_norm * _matched_norm)
+            _mode_indices[_weight_position, _lag_position] = _matched_index
+            _retained_ranks[_weight_position, _lag_position] = _S_r.size
+
+    ocean_augmented_koopman_rates = _rates
+    ocean_augmented_eigenfunction_overlaps = _overlaps
+    ocean_augmented_temperature_correlations = _temperature_correlations
+    ocean_augmented_ocean_correlations = _ocean_correlations
+    ocean_augmented_mode_indices = _mode_indices
+    ocean_augmented_retained_ranks = _retained_ranks
+    return (
+        ocean_augmented_eigenfunction_overlaps,
+        ocean_augmented_koopman_rates,
+        ocean_augmented_mode_indices,
+        ocean_augmented_ocean_correlations,
+        ocean_augmented_retained_ranks,
+        ocean_augmented_temperature_correlations,
+    )
+
+
+@app.cell
+def _(
+    np,
+    ocean_augmentation_fixed_rank,
+    ocean_augmentation_kernel_weight,
+    ocean_augmentation_kernel_weights,
+    ocean_augmented_eigenfunction_overlaps,
+    ocean_augmented_koopman_rates,
+    ocean_augmented_mode_indices,
+    ocean_augmented_ocean_correlations,
+    ocean_augmented_retained_ranks,
+    ocean_augmented_temperature_correlations,
+    plt,
+    temperature_robustness_lags_years,
+):
+    _weight_position = int(
+        np.flatnonzero(
+            np.isclose(
+                np.asarray(ocean_augmentation_kernel_weights, dtype=float),
+                ocean_augmentation_kernel_weight,
+            )
+        )[0]
+    )
+    _temperature_only_rates = ocean_augmented_koopman_rates[0]
+    _selected_rates = ocean_augmented_koopman_rates[_weight_position]
+    _selected_overlaps = ocean_augmented_eigenfunction_overlaps[_weight_position]
+    _selected_mode_indices = ocean_augmented_mode_indices[_weight_position]
+    _selected_ocean_correlations = ocean_augmented_ocean_correlations[
+        _weight_position
+    ]
+    _selected_retained_ranks = ocean_augmented_retained_ranks[_weight_position]
+    _selected_temperature_correlations = (
+        ocean_augmented_temperature_correlations[_weight_position]
+    )
+    _lags = np.asarray(temperature_robustness_lags_years, dtype=int)
+    _x = np.arange(_lags.size)
+    _fig, (_rate_axis, _identity_axis) = plt.subplots(
+        1,
+        2,
+        figsize=(13.5, 4.8),
+    )
+    _rate_axis.plot(
+        _x,
+        _temperature_only_rates.real,
+        "o--",
+        color="0.35",
+        linewidth=1.8,
+        label="temperature only",
+    )
+    _rate_axis.plot(
+        _x,
+        _selected_rates.real,
+        "o-",
+        color="tab:blue",
+        linewidth=2.2,
+        label="temperature + thermocline heat content",
+    )
+    for _position, (_rate, _mode_index, _rank) in enumerate(
+        zip(
+            _selected_rates,
+            _selected_mode_indices,
+            _selected_retained_ranks,
+        )
+    ):
+        _rate_axis.annotate(
+            f"j={_mode_index}, r={_rank}",
+            xy=(_position, _rate.real),
+            xytext=(0, 8),
+            textcoords="offset points",
+            ha="center",
+            fontsize=8,
+        )
+    _rate_axis.axhline(0.0, color="black", linewidth=0.7, alpha=0.5)
+    _rate_axis.set(
+        ylabel=r"$\mathrm{Re}\,\lambda$ (year$^{-1}$)",
+        title="Does the ocean coordinate stabilize the decay rate?",
+    )
+    _rate_axis.legend(fontsize=8)
+
+    _identity_axis.plot(
+        _x,
+        _selected_overlaps,
+        "o-",
+        linewidth=2.0,
+        label="overlap with temperature-only mode",
+    )
+    _identity_axis.plot(
+        _x,
+        _selected_temperature_correlations,
+        "s--",
+        linewidth=1.7,
+        label=r"$|\mathrm{corr}(\phi,\langle T_N\rangle)|$",
+    )
+    _identity_axis.plot(
+        _x,
+        _selected_ocean_correlations,
+        "^--",
+        linewidth=1.7,
+        label=r"$|\mathrm{corr}(\phi,H_{200-750})|$",
+    )
+    _identity_axis.set(
+        ylabel="similarity",
+        title="Composition of the tracked eigenfunction",
+        ylim=(0.0, 1.05),
+    )
+    _identity_axis.legend(fontsize=8)
+    for _axis in (_rate_axis, _identity_axis):
+        _axis.set(
+            xticks=_x,
+            xticklabels=[str(_lag) for _lag in _lags],
+            xlabel="direct fitting lag (years)",
+        )
+        _axis.grid(alpha=0.3, linestyle="--")
+    _fig.suptitle(
+        "Tentative NH thermocline-memory augmentation "
+        f"(ocean kernel weight {ocean_augmentation_kernel_weight:g}, "
+        f"fixed rank {ocean_augmentation_fixed_rank})"
+    )
+    _fig.tight_layout(rect=(0, 0, 1, 0.94))
+    _fig
     return
 
 
 @app.cell
-def _():
-    # _fig, (_rate_axis, _rank_axis) = plt.subplots(1, 2, figsize=(12, 4))
-    # for _mode_index in range(direct_lag_koopman_rates.shape[1]):
-    #     _rate_axis.plot(
-    #         lag_consistency_lags_years,
-    #         direct_lag_koopman_rates[:, _mode_index].real,
-    #         "o-",
-    #         label=fr"matched mode {_mode_index + 1}",
-    #     )
-    # _rate_axis.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
-    # _rate_axis.set(
-    #     xlabel="direct fitting lag (years)",
-    #     ylabel=r"$\mathrm{Re}\,\lambda$ (year$^{-1}$)",
-    #     title="Direct-lag KDMD rate consistency",
-    # )
-    # _rate_axis.legend()
-    # _rate_axis.grid(alpha=0.3, linestyle="--")
-
-    # _rank_axis.plot(
-    #     lag_consistency_lags_years,
-    #     lag_consistency_retained_ranks,
-    #     "o-",
-    #     color="tab:purple",
-    # )
-    # _rank_axis.set(
-    #     xlabel="direct fitting lag (years)",
-    #     ylabel="retained KDMD rank",
-    #     title="Regularized rank by fitting lag",
-    # )
-    # _rank_axis.grid(alpha=0.3, linestyle="--")
-    # _fig.tight_layout()
-    # _fig
+def _(
+    np,
+    ocean_augmentation_fixed_rank,
+    ocean_augmentation_kernel_weights,
+    ocean_augmented_eigenfunction_overlaps,
+    ocean_augmented_koopman_rates,
+    ocean_augmented_ocean_correlations,
+    plt,
+    temperature_robustness_lags_years,
+):
+    _rates = ocean_augmented_koopman_rates.real
+    _normalized_rates = _rates / _rates[:, :1]
+    _fields = (
+        (_rates, r"$\mathrm{Re}\,\lambda$ (year$^{-1}$)", ".3f", "coolwarm"),
+        (
+            _normalized_rates,
+            r"$\mathrm{Re}\,\lambda(\ell)/\mathrm{Re}\,\lambda(1)$",
+            ".2f",
+            "viridis",
+        ),
+        (
+            ocean_augmented_eigenfunction_overlaps,
+            "overlap with temperature-only mode",
+            ".2f",
+            "viridis",
+        ),
+        (
+            ocean_augmented_ocean_correlations,
+            r"$|\mathrm{corr}(\phi,H_{200-750})|$",
+            ".2f",
+            "magma",
+        ),
+    )
+    _lag_labels = [str(_lag) for _lag in temperature_robustness_lags_years]
+    _weight_labels = [f"{_weight:g}" for _weight in ocean_augmentation_kernel_weights]
+    _fig, _axes = plt.subplots(2, 2, figsize=(14, 9), constrained_layout=True)
+    for _axis, (_values, _title, _format, _cmap) in zip(
+        _axes.ravel(),
+        _fields,
+    ):
+        _image = _axis.imshow(_values, aspect="auto", cmap=_cmap)
+        _midpoint = float(
+            np.nanmin(_values)
+            + 0.5 * (np.nanmax(_values) - np.nanmin(_values))
+        )
+        for _row in range(_values.shape[0]):
+            for _column in range(_values.shape[1]):
+                _value = _values[_row, _column]
+                _axis.text(
+                    _column,
+                    _row,
+                    format(_value, _format),
+                    ha="center",
+                    va="center",
+                    fontsize=8,
+                    color="white" if _value < _midpoint else "black",
+                )
+        _axis.set(
+            xticks=np.arange(len(_lag_labels)),
+            xticklabels=_lag_labels,
+            yticks=np.arange(len(_weight_labels)),
+            yticklabels=_weight_labels,
+            xlabel="direct fitting lag (years)",
+            ylabel="ocean kernel weight",
+            title=_title,
+        )
+        _fig.colorbar(_image, ax=_axis, shrink=0.85)
+    _fig.suptitle(
+        "Thermocline-coordinate weight sweep "
+        f"at fixed KDMD rank {ocean_augmentation_fixed_rank}"
+    )
+    _fig
     return
 
 

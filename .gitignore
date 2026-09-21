@@ -16,8 +16,9 @@ htmlcov/
 .venv
 
 # Generated data
-data/*.nc
-data/*/*.nc
+data
 figures/*
 # Mac files
 .DS_Store
+
+PLASIM_INFO

@@ -42,7 +42,27 @@ def _(get_data_dir, np, xr):
         coords={"lat": zonal_T["lat"]},
         name="latitude_weights",
     )
-    return latitude_weights, zonal_T
+    return data_dir, latitude_weights, zonal_T
+
+
+@app.cell
+def _(data_dir, plt, xr):
+    fnamee = "BENCHMARK_360ppm_T21L10_LSG_MPI4_20Y_PLA.2000-2009.nc"
+    fnamee2 = "BENCHMARK_360ppm_T21L10_LSG_MPI4_20Y_PLA.2010-2019.nc"
+
+    ds = xr.open_dataset(data_dir / fnamee)
+    zonal = ds["tas"].mean(dim="lon")
+
+    ds2 = xr.open_dataset(data_dir / fnamee2)
+    zonal2 = ds["tas"].mean(dim="lon")
+
+    z = xr.concat([zonal,zonal2],dim="time")
+    res = z - z.mean(dim="time")
+    _fig , _ax = plt.subplots()
+    for i in range(len( zonal["time"] )):
+        res.isel(time=i).plot(ax=_ax)
+    _fig
+    return
 
 
 @app.cell
@@ -85,6 +105,31 @@ def _(latitude_weights, monthly_temperature):
 
 @app.cell
 def _(monthly_temperature):
+    # Use only complete model years: September 1007 is absent from the source
+    # data and must not produce an 11-month annual state.
+    monthly_count = monthly_temperature.notnull().sum(dim="month")
+    annual_temperature = monthly_temperature.mean(dim="month", skipna=True).where(
+        monthly_count == 12,
+        drop=True,
+    )
+    annual_temperature.attrs = {
+        **monthly_temperature.attrs,
+        "long_name": "annual mean zonal-mean 2 m air temperature",
+        "averaging": "mean over 12 monthly means",
+    }
+    annual_temperature_anomaly = annual_temperature - annual_temperature.mean(
+        dim="year"
+    )
+    annual_temperature_anomaly.attrs = {
+        **annual_temperature.attrs,
+        "long_name": "annual-mean zonal 2 m air temperature anomaly",
+        "description": "annual zonal temperature minus the available-year annual mean",
+    }
+    return annual_temperature, annual_temperature_anomaly
+
+
+@app.cell
+def _(monthly_temperature):
     # Remove the deterministic seasonal cycle separately at every latitude.
     # The mean skips September 1007, whose monthly field is entirely missing.
     monthly_temperature_float = monthly_temperature.astype("float64")
@@ -105,7 +150,7 @@ def _(monthly_temperature):
         "long_name": "calendar-month anomaly of zonal-mean 2 m air temperature",
         "description": "monthly temperature minus the climatology for the same calendar month",
     }
-    return monthly_temperature_anomaly, monthly_temperature_climatology
+    return (monthly_temperature_climatology,)
 
 
 @app.cell
@@ -155,54 +200,146 @@ def _(monthly_temperature_climatology, plt):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Koopman analysis
+    ## Annual global-mean temperature
 
-    We analyze the full monthly zonal 2 m-temperature (`tas`) anomaly field,
-    retaining PLASIM's month-conditioned anomaly construction. The initial fit
-    is an effective two-month Koopman map averaged over calendar phase; pairs
-    crossing missing source months are excluded and Gaussian latitude weights
-    are normalized over the full sphere.
+    Before fitting the Koopman model, inspect the low-frequency global signal.
+    Each annual value is the mean of its 12 monthly global means. The incomplete
+    year containing the missing September 1007 is excluded, so every retained
+    annual mean has the same temporal support.
     """)
     return
 
 
 @app.cell
-def _(monthly_temperature_anomaly):
-    monthly_temperature_anomaly_trajectory = (
-        monthly_temperature_anomaly.stack(sample=("year", "month"))
-        .transpose("sample", "lat")
-        .dropna(dim="sample", how="any")
-    )
-    monthly_step = (
-        (monthly_temperature_anomaly_trajectory["year"]
-        - monthly_temperature_anomaly_trajectory["year"].min())
-        * 12
-        + (monthly_temperature_anomaly_trajectory["month"] - 1)
-    )
-    monthly_temperature_anomaly_trajectory.attrs = {
-        **monthly_temperature_anomaly.attrs,
-        "long_name": "full-field monthly zonal temperature anomaly trajectory",
-        "sampling_interval": "1 model month",
+def _(annual_temperature, latitude_weights, np, xr):
+    from koopman_response.utils.signal import cross_correlation
+
+    annual_global_temperature = annual_temperature.weighted(latitude_weights).mean(dim="lat")
+    annual_global_temperature.attrs = {
+        **annual_temperature.attrs,
+        "long_name": "annual global mean 2 m air temperature",
+        "averaging": "mean over 12 monthly global means",
     }
-    return monthly_step, monthly_temperature_anomaly_trajectory
+
+    # The missing September 1007 creates a gap in the otherwise annual grid.
+    # ``cross_correlation`` requires regularly sampled data, so retain the
+    # longest contiguous annual segment (1008--2000) for this diagnostic.
+    annual_years = annual_global_temperature["year"].values
+    segment_starts = np.concatenate(([0], np.flatnonzero(np.diff(annual_years) != 1) + 1))
+    segment_stops = np.concatenate((segment_starts[1:], [annual_years.size]))
+    segment_lengths = segment_stops - segment_starts
+    longest_segment = int(np.argmax(segment_lengths))
+    correlation_temperature = annual_global_temperature.isel(
+        year=slice(segment_starts[longest_segment], segment_stops[longest_segment])
+    )
+    correlation_dt_years = float(
+        np.median(np.diff(correlation_temperature["year"].values))
+    )
+    if not np.allclose(
+        np.diff(correlation_temperature["year"].values), correlation_dt_years
+    ):
+        raise ValueError("Annual temperatures for correlation are not regularly sampled.")
+
+    # Use the same helper and biased normalization as the global-temperature
+    # correlation in analysis_new.py. The helper removes the temporal mean.
+    max_correlation_lag_years = min(100, correlation_temperature.size - 1)
+    correlation_lags, annual_temperature_correlation_values = cross_correlation(
+        x=correlation_temperature.values,
+        y=correlation_temperature.values,
+        dt=correlation_dt_years,
+        max_lag=max_correlation_lag_years,
+        normalization="biased",
+    )
+    annual_temperature_autocorrelation = xr.DataArray(
+        annual_temperature_correlation_values / annual_temperature_correlation_values[0],
+        dims=("lag_years",),
+        coords={"lag_years": correlation_lags},
+        name="annual_temperature_autocorrelation",
+        attrs={
+            "long_name": "normalized autocorrelation of annual global mean 2 m air temperature",
+            "description": (
+                "mean-removed biased autocovariance normalized by its zero-lag value; "
+                f"computed from contiguous source years "
+                f"{int(correlation_temperature.year.min())}--"
+                f"{int(correlation_temperature.year.max())}"
+            ),
+        },
+    )
+    return annual_global_temperature, annual_temperature_autocorrelation
 
 
 @app.cell
-def _(monthly_step, monthly_temperature_anomaly_trajectory, np):
-    snapshot_lag_months = 2
-    valid_monthly_transition = (
-        monthly_step.values[snapshot_lag_months:]
-        - monthly_step.values[:-snapshot_lag_months]
-        == snapshot_lag_months
+def _(annual_global_temperature, annual_temperature_autocorrelation, plt):
+    _fig, (_temperature_ax, _correlation_ax) = plt.subplots(1, 2, figsize=(13, 4))
+
+    _temperature_ax.plot(
+        annual_global_temperature["year"],
+        annual_global_temperature,
+        color="tab:blue",
+        linewidth=0.8,
     )
-    monthly_snapshot_origins = np.flatnonzero(valid_monthly_transition)
-    X_snap = monthly_temperature_anomaly_trajectory.values[monthly_snapshot_origins]
-    Y_snap = monthly_temperature_anomaly_trajectory.values[
-        monthly_snapshot_origins + snapshot_lag_months
+    _temperature_ax.set_xlabel("Source year")
+    _temperature_ax.set_ylabel("Annual global mean temperature [K]")
+    _temperature_ax.grid(alpha=0.3, linestyle="--")
+
+    _correlation_ax.plot(
+        annual_temperature_autocorrelation["lag_years"],
+        annual_temperature_autocorrelation,
+        ".-",
+        color="tab:orange",
+    )
+    _correlation_ax.axhline(0.0, color="black", linewidth=0.8)
+    _correlation_ax.set_xlabel("Lag [years]")
+    _correlation_ax.set_ylabel("Autocorrelation")
+    _correlation_ax.set_ylim(-0.2, 1.05)
+    _correlation_ax.grid(alpha=0.3, linestyle="--")
+    _fig.tight_layout()
+    _fig
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Koopman analysis
+
+    We analyze the full annual-mean zonal 2 m-temperature (`tas`) anomaly
+    field. Annual averaging removes the deterministic seasonal cycle; the
+    anomaly is then formed relative to the available-year annual mean at every
+    latitude. The initial fit is a one-year Koopman map. The missing 1007 year
+    is excluded, and pairs across its resulting gap are not used.
+    """)
+    return
+
+
+@app.cell
+def _(annual_temperature_anomaly):
+    annual_temperature_anomaly_trajectory = annual_temperature_anomaly.rename(year="sample")
+    annual_temperature_anomaly_trajectory.attrs = {
+        **annual_temperature_anomaly.attrs,
+        "long_name": "full-field annual zonal temperature anomaly trajectory",
+        "sampling_interval": "1 model year",
+    }
+    return (annual_temperature_anomaly_trajectory,)
+
+
+@app.cell
+def _(annual_temperature_anomaly_trajectory, np):
+    snapshot_lag_years = 1
+    source_years = annual_temperature_anomaly_trajectory["sample"].values
+    valid_annual_transition = (
+        source_years[snapshot_lag_years:]
+        - source_years[:-snapshot_lag_years]
+        == snapshot_lag_years
+    )
+    annual_snapshot_origins = np.flatnonzero(valid_annual_transition)
+    X_snap = annual_temperature_anomaly_trajectory.values[annual_snapshot_origins]
+    Y_snap = annual_temperature_anomaly_trajectory.values[
+        annual_snapshot_origins + snapshot_lag_years
     ]
-    snapshot_interval_days = 30.0 * snapshot_lag_months
+    snapshot_interval_days = 360.0 * snapshot_lag_years
     if X_snap.shape != Y_snap.shape or X_snap.shape[0] == 0:
-        raise ValueError("Monthly Koopman snapshot pairs are empty or misaligned.")
+        raise ValueError("Annual Koopman snapshot pairs are empty or misaligned.")
     return X_snap, Y_snap, snapshot_interval_days
 
 
@@ -290,7 +427,7 @@ def _(plt, tsvd):
 
 @app.cell
 def _(KoopmanSpectrumKDMD, kdmd, snapshot_interval_days, tsvd):
-    rel_threshold_svd = 6e-3
+    rel_threshold_svd = 5e-3
     koopman_matrix, U_r, S_r = tsvd.solve_from_factorization(
         kdmd.A,
         rel_threshold=rel_threshold_svd,
@@ -309,14 +446,14 @@ def _(KoopmanSpectrumKDMD, kdmd, snapshot_interval_days, tsvd):
 
 @app.cell
 def _(eigs_ct, plt, snapshot_interval_days):
-    eigs_per_month = eigs_ct * snapshot_interval_days
+    eigs_per_year = eigs_ct * snapshot_interval_days
 
     _fig, _ax = plt.subplots(figsize=(5, 5))
-    _ax.plot(eigs_per_month.real, eigs_per_month.imag, ".", markersize=5)
+    _ax.plot(eigs_per_year.real, eigs_per_year.imag, ".", markersize=5)
     _ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.5)
     _ax.axvline(0.0, color="black", linewidth=0.8, alpha=0.5)
-    _ax.set_xlabel(r"$\mathrm{Re}\,\lambda$ [model month$^{-1}$]")
-    _ax.set_ylabel(r"$\mathrm{Im}\,\lambda$ [model month$^{-1}$]")
+    _ax.set_xlabel(r"$\mathrm{Re}\,\lambda$ [model year$^{-1}$]")
+    _ax.set_ylabel(r"$\mathrm{Im}\,\lambda$ [model year$^{-1}$]")
     _ax.grid(alpha=0.3, linestyle="--")
     _fig.tight_layout()
     _fig
@@ -324,22 +461,18 @@ def _(eigs_ct, plt, snapshot_interval_days):
 
 
 @app.cell
-def _(monthly_temperature_anomaly_trajectory, spectrum):
+def _(annual_temperature_anomaly_trajectory, spectrum):
     phi_vals = spectrum.evaluate_eigenfunctions(
-        monthly_temperature_anomaly_trajectory.values,
+        annual_temperature_anomaly_trajectory.values,
         batch_size=5_000,
     )
     return (phi_vals,)
 
 
 @app.cell
-def _(
-    latitude_weights,
-    monthly_temperature_anomaly_trajectory,
-    np,
-):
-    temperature_anomaly = monthly_temperature_anomaly_trajectory.values
-    _latitude = monthly_temperature_anomaly_trajectory["lat"].values
+def _(annual_temperature_anomaly_trajectory, latitude_weights, np):
+    temperature_anomaly = annual_temperature_anomaly_trajectory.values
+    _latitude = annual_temperature_anomaly_trajectory["lat"].values
     area_weights = np.asarray(latitude_weights.values, dtype=float)
 
     def regional_mean(latitude_mask):
@@ -361,20 +494,14 @@ def _(
 
 
 @app.cell
-def _(
-    delta_temperature_symmetric,
-    global_temperature,
-    np,
-    phi_vals,
-    plt,
-):
+def _(delta_temperature_symmetric, global_temperature, np, phi_vals, plt):
     from scipy.stats import binned_statistic_2d
 
     eigenfunction_indices = range(1, 7)
     if phi_vals.shape[1] <= max(eigenfunction_indices):
         raise ValueError("The Koopman spectrum does not contain six non-stationary eigenfunctions.")
 
-    n_bins = 70
+    n_bins = 30
     min_count = 4
 
     bin_count, global_edges, delta_edges, _ = binned_statistic_2d(
@@ -456,15 +583,15 @@ def _(S_r, U_r, X_train, np, spectrum):
 
 @app.cell
 def _(
+    annual_temperature_anomaly_trajectory,
     eigs_ct,
     koopman_mode_matrix,
-    monthly_temperature_anomaly_trajectory,
     plt,
     snapshot_interval_days,
 ):
     _mode_indices = range(1, 7)
-    eigenvalues_per_month = eigs_ct * snapshot_interval_days
-    _latitude = monthly_temperature_anomaly_trajectory["lat"]
+    eigenvalues_per_year = eigs_ct * snapshot_interval_days
+    _latitude = annual_temperature_anomaly_trajectory["lat"]
 
     _fig, _axes = plt.subplots(2, 3, figsize=(15, 8), sharex=True)
     for _mode_index, _ax in zip(_mode_indices, _axes.ravel()):
@@ -472,7 +599,7 @@ def _(
         _ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.5)
         _ax.set_title(
             rf"$\Re\,v_{{{_mode_index}}}$, "
-            rf"$\Re\,\lambda={eigenvalues_per_month[_mode_index].real:.3g}$ month$^{{-1}}$"
+            rf"$\Re\,\lambda={eigenvalues_per_year[_mode_index].real:.3g}$ year$^{{-1}}$"
         )
         _ax.grid(alpha=0.3, linestyle="--")
 
@@ -490,7 +617,7 @@ def _(mo):
     mo.md(r"""
     ## EOF analysis
 
-    EOFs provide a variance-based reference for the same full-field monthly
+    EOFs provide a variance-based reference for the same full-field annual
     anomaly trajectory and Gaussian area metric used by KDMD. They are not a
     replacement for Koopman eigenfunctions, which are selected by dynamical
     evolution rather than explained variance.
@@ -499,13 +626,8 @@ def _(mo):
 
 
 @app.cell
-def _(
-    latitude_weights,
-    monthly_temperature_anomaly_trajectory,
-    np,
-    xr,
-):
-    anomaly_data = monthly_temperature_anomaly_trajectory.values
+def _(annual_temperature_anomaly_trajectory, latitude_weights, np, xr):
+    anomaly_data = annual_temperature_anomaly_trajectory.values
     spatial_weights = np.array(
         latitude_weights.values,
         dtype=float,
@@ -520,7 +642,7 @@ def _(
     eof_patterns = xr.DataArray(
         Vt / np.sqrt(spatial_weights)[None, :],
         dims=("eof", "lat"),
-        coords={"eof": eof_indices, "lat": monthly_temperature_anomaly_trajectory["lat"]},
+        coords={"eof": eof_indices, "lat": annual_temperature_anomaly_trajectory["lat"]},
         name="eof_patterns",
         attrs={
             "long_name": "Gaussian-area-weighted EOF patterns",
@@ -531,7 +653,7 @@ def _(
         U * singular_values[None, :],
         dims=("sample", "eof"),
         coords={
-            "sample": monthly_temperature_anomaly_trajectory["sample"],
+            "sample": annual_temperature_anomaly_trajectory["sample"],
             "eof": eof_indices,
         },
         name="eof_principal_components",
