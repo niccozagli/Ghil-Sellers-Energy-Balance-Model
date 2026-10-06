@@ -21,6 +21,11 @@ dependencies = [
     "xarray>=2024.6",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
 [tool.uv.workspace]
 members = [
     "external/Koopman-Dynamical-Response",

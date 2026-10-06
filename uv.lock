@@ -393,6 +393,11 @@ dependencies = [
     { name = "xarray" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "cartopy", specifier = ">=0.25.0" },
@@ -406,6 +411,9 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "xarray", specifier = ">=2024.6" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8" }]
 
 [[package]]
 name = "h11"
