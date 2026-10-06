@@ -22,3 +22,5 @@ figures/*
 .DS_Store
 
 PLASIM_INFO
+# Local agent reports
+Claude/
