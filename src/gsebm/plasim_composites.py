@@ -63,6 +63,8 @@ class CompositeMaps:
     lsg_vector_lon: np.ndarray
     u_mean_150_300m: np.ndarray
     v_mean_150_300m: np.ndarray
+    u_150_300m_snapshots: np.ndarray
+    v_150_300m_snapshots: np.ndarray
     edge_lat: np.ndarray
     edge_lon: np.ndarray
     detected_peaks: int
@@ -239,6 +241,7 @@ def _compute_cached(
         u_mean = np.asarray(source.variables["u_mean_150_300m"][:], dtype=float)
         v_mean = np.asarray(source.variables["v_mean_150_300m"][:], dtype=float)
         wet = np.asarray(source.variables["wet"][3:6], dtype=bool).any(axis=0)
+        vector_wet = np.asarray(source.variables["wetvec"][3:6], dtype=bool).any(axis=0)
 
         surface = np.asarray(
             source.variables["surface_temperature"][start:stop], dtype=np.float32
@@ -277,6 +280,13 @@ def _compute_cached(
         snapshots = _sample_phase_maps(processed_theta, pathway_positions)
         theta_difference[~wet] = np.nan
         snapshots[:, ~wet] = np.nan
+        current_snapshots = []
+        for name in ("u_layer_150_300m", "v_layer_150_300m"):
+            current = np.asarray(source.variables[name][start:stop], dtype=np.float32)
+            processed_current = _preprocess_map(current, detrend_method, smooth_years)
+            phase_current = _sample_phase_maps(processed_current, pathway_positions)
+            phase_current[:, ~vector_wet] = np.nan
+            current_snapshots.append(phase_current)
     return CompositeMaps(
         t21_lat=lat, t21_lon=lon, lsm=lsm,
         surface_temperature_difference=surface_difference,
@@ -288,6 +298,8 @@ def _compute_cached(
         theta_150_300m_snapshots=snapshots,
         lsg_vector_lat=vector_lat, lsg_vector_lon=vector_lon,
         u_mean_150_300m=u_mean, v_mean_150_300m=v_mean,
+        u_150_300m_snapshots=current_snapshots[0],
+        v_150_300m_snapshots=current_snapshots[1],
         edge_lat=edge_lat, edge_lon=edge_lon,
         detected_peaks=len(peaks), composited_events=len(event_peaks),
         median_cycle_years=float(np.median(np.diff(np.asarray(peaks)))),

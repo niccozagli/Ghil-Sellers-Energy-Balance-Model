@@ -13,7 +13,7 @@ def _():
     import matplotlib.pyplot as plt
     import numpy as np
     from scipy.signal import welch
-    from gsebm.paths import get_data_dir
+    from gsebm.plasim_raw_maps import raw_map_root
     from gsebm.plasim_composites import (
         compute_map_composite, phase_sampling_schedule, prepare_cycle_preview,
     )
@@ -28,13 +28,13 @@ def _():
         compute_diagnostics,
         compute_map_composite,
         compute_vertical_timing,
-        get_data_dir,
         io,
         mo,
         np,
         phase_sampling_schedule,
         plt,
         prepare_cycle_preview,
+        raw_map_root,
         welch,
     )
 
@@ -53,26 +53,43 @@ def _(mo):
     `sic` is annual mean local sea-ice cover from 0 to 1. The mean SIC and the
     fraction of ocean area with annual SIC ≥ 0.5 are distinct. Coupling flux
     retains its native LSG sign. South Atlantic surface temperature uses T21
-    `ts` over ocean cells, including ice-covered cells.
+    `ts` over ocean cells, including ice-covered cells. The additional panels
+    below also read annual radiation, surface flux, albedo, snow-depth,
+    salinity, and LSG ice-volume fields from the same archive.
     """)
     return
 
 
 @app.cell
-def _(get_data_dir, mo):
-    _root = get_data_dir() / "Plasim"
+def _(mo, raw_map_root):
+    import os
+    from pathlib import Path
+
+    _root = raw_map_root()
+    _external_root = Path("/Volumes/Nicco/Plasim/extracted")
+    if (
+        "PLASIM_RAW_MAP_ROOT" not in os.environ
+        and _external_root.is_dir()
+        and any(_external_root.glob("*/*_spinup_raw_maps.nc"))
+    ):
+        _root = _external_root
     archives = {
         _path.parent.name.removeprefix("CONTROL_360ppm_T21L10_10000Y_MU_"): _path
         for _path in sorted(_root.glob("*/*_spinup_raw_maps.nc"))
     }
     if not archives:
         raise FileNotFoundError(f"No raw-map archives found in {_root}")
-    _options = sorted(archives, key=lambda _value: float(_value.replace("p", ".")))
+    _options = sorted(
+        archives,
+        key=lambda _value: (
+            float(_value.split("_", 1)[0].replace("p", ".")), _value,
+        ),
+    )
     selected_mu = mo.ui.dropdown(
         options=_options, value="1240" if "1240" in archives else _options[0],
         label="PlaSim μ",
     )
-    selected_mu
+    mo.vstack([mo.md(f"**Archive root:** `{_root}`"), selected_mu])
     return archives, selected_mu
 
 
@@ -84,11 +101,10 @@ def _(archives, compute_diagnostics, selected_mu):
 
 
 @app.cell
-def _(diagnostics, mo, np, selected_mu):
+def _(diagnostics, mo, np):
     years = np.asarray(diagnostics["year"].values, dtype=int)
     _default_window = (
-        (6500, 14999) if selected_mu.value == "1240" and years[0] <= 6500
-        and years[-1] >= 14999 else (int(years[0]), int(years[-1]))
+        (int(years[0]), int(years[-1]))
     )
     visible_years = mo.ui.range_slider(
         start=int(years[0]), stop=int(years[-1]), step=1,
@@ -96,15 +112,19 @@ def _(diagnostics, mo, np, selected_mu):
         label="Analysis window",
     )
     temperature_view = mo.ui.dropdown(
-        options=["Window anomaly", "Absolute"], value="Window anomaly",
+        options=["Window anomaly", "Absolute"], value="Absolute",
         label="Surface and ocean temperature display",
+    )
+    field_view = mo.ui.dropdown(
+        options=["Window anomaly", "Absolute"], value="Absolute",
+        label="Radiation, salinity, and ice-volume display",
     )
     mo.vstack([
         mo.md("### Display controls"),
         mo.md(f"**Coverage:** {years[0]}–{years[-1]} ({years.size:,} annual records)"),
-        temperature_view, visible_years,
+        mo.hstack([temperature_view, field_view]), visible_years,
     ])
-    return temperature_view, visible_years, years
+    return field_view, temperature_view, visible_years, years
 
 
 @app.cell
@@ -170,6 +190,70 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
+    ## Southern radiation, South Atlantic surface fluxes, and LSG ice volume
+
+    T21 means use the stored Gaussian latitude weights. TOA fields cover the
+    Southern Hemisphere; surface fields cover ocean cells in the South Atlantic
+    between 60°S and the equator. Radiation and turbulent fluxes retain their
+    archived source signs. `rst` is net TOA shortwave, so `rsut` is shown as a
+    separate reflected-shortwave diagnostic rather than added to `rst`.
+    LSG ice volume is global and includes snow in water-equivalent thickness.
+    """)
+    return
+
+
+@app.cell
+def _(diagnostics, field_view, np, plt, selected_mu, visible_years, window, years):
+    _anomaly = field_view.value == "Window anomaly"
+    _figure, _axes = plt.subplots(3, 2, figsize=(13, 10), sharex=True)
+    _groups = (
+        (_axes[0, 0], "Southern TOA", "W m⁻²", (
+            ("southern_toa_shortwave", "net shortwave"),
+            ("southern_toa_longwave", "net longwave"),
+            ("southern_toa_reflected_shortwave", "reflected shortwave"),
+            ("southern_toa_imbalance", "SW + LW"),
+        ), 1.0),
+        (_axes[0, 1], "South Atlantic surface radiation", "W m⁻²", (
+            ("south_atlantic_surface_shortwave", "shortwave"),
+            ("south_atlantic_surface_longwave", "longwave"),
+        ), 1.0),
+        (_axes[1, 0], "South Atlantic turbulent fluxes", "W m⁻²", (
+            ("south_atlantic_sensible_heat_flux", "sensible"),
+            ("south_atlantic_latent_heat_flux", "latent"),
+        ), 1.0),
+        (_axes[1, 1], "South Atlantic surface albedo", "1", (
+            ("south_atlantic_surface_albedo", "albedo"),
+        ), 1.0),
+        (_axes[2, 0], "South Atlantic snow depth", "m", (
+            ("south_atlantic_snow_depth", "snow depth"),
+        ), 1.0),
+        (_axes[2, 1], "Global LSG ice volume", "10¹² m³", (
+            ("global_lsg_ice_volume", "ice and snow"),
+        ), 1e12),
+    )
+    for _axis, _title, _unit, _series, _scale in _groups:
+        for _name, _label in _series:
+            _values = np.asarray(diagnostics[_name].values, dtype=float) / _scale
+            _reference = np.nanmean(_values[window]) if _anomaly else 0.0
+            _axis.plot(years, _values - _reference, linewidth=0.8, label=_label)
+        _axis.set_title(_title)
+        _axis.set_ylabel(f"{'Anomaly' if _anomaly else 'Value'} ({_unit})")
+        if len(_series) > 1:
+            _axis.legend(fontsize="small")
+        _axis.set_xlim(*visible_years.value)
+        _axis.grid(alpha=0.2)
+        _axis.ticklabel_format(axis="x", style="plain", useOffset=False)
+    for _axis in _axes[-1]:
+        _axis.set_xlabel("Model year")
+    _figure.suptitle(f"PlaSim μ={selected_mu.value}: additional annual fields")
+    _figure.tight_layout()
+    _figure
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
     ## Volume-weighted ocean box temperatures
     """)
     return
@@ -197,6 +281,51 @@ def _(diagnostics, np, plt, temperature_view, visible_years, window, years):
             )
         _axis.set_title(_labels[_band])
         _axis.set_ylabel("Ocean T anomaly (K)" if temperature_view.value == "Window anomaly" else "Ocean T (K)")
+        _axis.set_xlim(*visible_years.value)
+        _axis.grid(alpha=0.2)
+        _axis.ticklabel_format(axis="x", style="plain", useOffset=False)
+    _axes[0, 0].legend(fontsize="small")
+    for _axis in _axes[-1]:
+        _axis.set_xlabel("Model year")
+    _figure.tight_layout()
+    _figure
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Upper-ocean salinity
+
+    Native LSG salinity is averaged by wet cell volume in the global ocean and
+    South Atlantic (0–60°S). Each band uses the same native layer boundaries
+    as the temperature panels. This is a basin-scale view of salinity changes;
+    it does not convert salinity to density.
+    """)
+    return
+
+
+@app.cell
+def _(diagnostics, field_view, np, plt, visible_years, window, years):
+    _salinity = np.asarray(diagnostics["ocean_box_salinity"].values, dtype=float)
+    _labels = ("0–100 m", "100–312.5 m", "312.5–700 m", "700–1025 m")
+    _figure, _axes = plt.subplots(2, 2, figsize=(13, 7), sharex=True)
+    for _band, _axis in enumerate(_axes.flat):
+        for _region, _label in enumerate(("Global ocean", "South Atlantic 0–60°S")):
+            _values = _salinity[:, _region, _band]
+            _reference = (
+                np.nanmean(_values[window])
+                if field_view.value == "Window anomaly" else 0.0
+            )
+            _axis.plot(
+                years, _values - _reference, linewidth=0.8,
+                color=("tab:blue", "tab:orange")[_region], label=_label,
+            )
+        _axis.set_title(_labels[_band])
+        _axis.set_ylabel(
+            "Salinity anomaly (‰)" if field_view.value == "Window anomaly"
+            else "Salinity (‰)"
+        )
         _axis.set_xlim(*visible_years.value)
         _axis.grid(alpha=0.2)
         _axis.ticklabel_format(axis="x", style="plain", useOffset=False)
@@ -316,6 +445,9 @@ def _(mo):
     The cell markers use a band of 0.4–3 times the median cycle period,
     equivalent to about 20–150 years for μ1240.
     The S3 pathway panels show −40%, −20%, 0%, +20%, and +40% of each cycle.
+    Current arrows can show phase composites of the annual 150–300 m current
+    anomalies, processed with the selected detrending and running mean, or
+    the full-archive mean currents for comparison.
     """)
     return
 
@@ -353,14 +485,22 @@ def _(mo):
     show_edge_cells = mo.ui.checkbox(
         value=True, label="Mark cells carrying 50% of the ice-area cycle",
     )
+    current_view = mo.ui.dropdown(
+        options={
+            "Phase-current anomalies": "phase_anomaly",
+            "Full-archive mean currents": "archive_mean",
+        },
+        value="Phase-current anomalies", label="S3 current arrows",
+    )
     mo.vstack([
         mo.md("### Composite controls"),
         mo.hstack([detrend_choice, running_mean_years]),
         mo.hstack([peak_radius_fraction, period_override]),
         mo.hstack([max_phase_window, min_before_phase_window, min_after_phase_window]),
-        show_edge_cells,
+        mo.hstack([show_edge_cells, current_view]),
     ])
     return (
+        current_view,
         detrend_choice,
         max_phase_window,
         min_after_phase_window,
@@ -530,6 +670,7 @@ def _(
     archive_path,
     composite_ready,
     compute_map_composite,
+    current_view,
     cycle_preview,
     io,
     max_phase_window,
@@ -653,10 +794,18 @@ def _(
     _vector_mask = (
         (_maps.lsg_vector_lat >= -56) & (_maps.lsg_vector_lat <= 12)
         & (_vector_lon >= -72) & (_vector_lon <= 42)
-        & np.isfinite(_maps.u_mean_150_300m)
-        & np.isfinite(_maps.v_mean_150_300m)
         & (np.arange(_maps.lsg_vector_lat.shape[0])[:, None] % 2 == 0)
     )
+    _phase_currents = current_view.value == "phase_anomaly"
+    _current_scale = 0.45
+    if _phase_currents:
+        _speed = np.hypot(
+            _maps.u_150_300m_snapshots[:, _vector_mask],
+            _maps.v_150_300m_snapshots[:, _vector_mask],
+        )
+        _finite_speed = _speed[np.isfinite(_speed)]
+        if _finite_speed.size:
+            _current_scale = max(float(np.percentile(_finite_speed, 90)) * 22.5, 1e-4)
     for _phase_index, (_phase, _axis) in enumerate(
         zip(_maps.pathway_phases, _pathway_axes, strict=True)
     ):
@@ -685,12 +834,20 @@ def _(
                 _x_edges, _y_edges, _value[None],
                 cmap="RdBu_r", norm=_pathway_norm, rasterized=True,
             )
+        _u = (
+            _maps.u_150_300m_snapshots[_phase_index]
+            if _phase_currents else _maps.u_mean_150_300m
+        )
+        _v = (
+            _maps.v_150_300m_snapshots[_phase_index]
+            if _phase_currents else _maps.v_mean_150_300m
+        )
+        _valid_vectors = _vector_mask & np.isfinite(_u) & np.isfinite(_v)
         _axis.quiver(
-            _vector_lon[_vector_mask],
-            _maps.lsg_vector_lat[_vector_mask],
-            _maps.u_mean_150_300m[_vector_mask],
-            _maps.v_mean_150_300m[_vector_mask],
-            color="0.25", scale=0.45, width=0.0045,
+            _vector_lon[_valid_vectors],
+            _maps.lsg_vector_lat[_valid_vectors],
+            _u[_valid_vectors], _v[_valid_vectors],
+            color="0.25", scale=_current_scale, width=0.0045,
             headwidth=3.5, headlength=4, alpha=0.75, zorder=4,
         )
         _axis.contour(
@@ -717,7 +874,8 @@ def _(
         f"S3 pathway snapshots ({_maps.composited_events} events)\n"
         f"{cycle_preview.detrend_method} detrend; "
         f"{cycle_preview.smooth_years}-year running mean; "
-        "arrows: full-archive mean currents; dashed: mean ice edge",
+        f"arrows: {'phase-current anomalies' if _phase_currents else 'full-archive mean currents'}; "
+        "dashed: mean ice edge",
     )
     _pathway_bytes = io.BytesIO()
     _pathway_figure.savefig(
@@ -725,7 +883,8 @@ def _(
     )
     _pathway_filename = (
         f"mu{selected_mu.value}_S3_pathway_snapshots_"
-        f"{cycle_preview.years[0]}-{cycle_preview.years[-1]}.png"
+        f"{cycle_preview.years[0]}-{cycle_preview.years[-1]}_"
+        f"{'phase_currents' if _phase_currents else 'mean_currents'}.png"
     )
     mo.vstack([
         mo.md("### S1 global maps"),

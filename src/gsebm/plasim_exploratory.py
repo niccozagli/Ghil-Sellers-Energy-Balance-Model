@@ -78,10 +78,13 @@ def _compute_cached(
         wet_area = np.asarray(source.variables["wet_surface_area"][:], dtype=float)
         flux_lat = np.asarray(source.variables["lsg_lat"][:], dtype=float)
 
-        nodes, latitude_weights = np.polynomial.legendre.leggauss(len(lat))
+        nodes, expected_weights = np.polynomial.legendre.leggauss(len(lat))
         if not np.allclose(lat, np.degrees(np.arcsin(nodes))[::-1], atol=1e-4):
             raise ValueError("T21 latitudes do not match the expected Gaussian grid.")
-        area = latitude_weights[::-1, None] * np.ones_like(lsm)
+        latitude_weights = np.asarray(source.variables["t21_gaussian_weight"][:], dtype=float)
+        if not np.allclose(latitude_weights, expected_weights[::-1]):
+            raise ValueError("Stored T21 Gaussian weights do not match the latitude grid.")
+        area = latitude_weights[:, None] * np.ones_like(lsm)
         ocean = lsm < 0.5
         surface_sector &= ocean
         if not surface_sector.any():
@@ -120,10 +123,19 @@ def _compute_cached(
                 "global_ice_covered_fraction", "southern_ice_covered_fraction",
                 "global_toa_imbalance", "southern_toa_imbalance",
                 "southern_coupling_flux",
+                "southern_toa_shortwave", "southern_toa_longwave",
+                "southern_toa_reflected_shortwave",
+                "south_atlantic_surface_shortwave", "south_atlantic_surface_longwave",
+                "south_atlantic_sensible_heat_flux", "south_atlantic_latent_heat_flux",
+                "south_atlantic_surface_albedo", "south_atlantic_snow_depth",
+                "global_lsg_ice_volume",
             )
         }
         box_temperature = np.full(
             (years.size, 2, len(OCEAN_BOX_BANDS)), np.nan, dtype=np.float32
+        )
+        box_salinity = np.full(
+            (years.size, 2, len(upper_weights)), np.nan, dtype=np.float32
         )
 
         def weighted_mean(values: np.ndarray, weight: np.ndarray) -> np.ndarray:
@@ -136,11 +148,15 @@ def _compute_cached(
             toa = np.asarray(source.variables["zonal_toa_energy_imbalance"][start:stop], dtype=float)
             flux = np.asarray(source.variables["zonal_newtonian_coupling_heat_flux"][start:stop], dtype=float)
             theta = np.asarray(source.variables["temperature_upper"][start:stop], dtype=float)
+            salinity = np.asarray(source.variables["salinity_upper"][start:stop], dtype=float)
 
             for band_index, band_weights in enumerate(upper_weights):
                 for box_index, weight in enumerate(band_weights):
                     box_temperature[start:stop, box_index, band_index] = (
                         np.nansum(theta * weight[None], axis=(1, 2, 3)) / weight.sum()
+                    )
+                    box_salinity[start:stop, box_index, band_index] = (
+                        np.nansum(salinity * weight[None], axis=(1, 2, 3)) / weight.sum()
                     )
             for deep_index, (label, _, _) in enumerate(OCEAN_BOX_BANDS[4:]):
                 deep_map = np.asarray(source.variables[f"temperature_{label}"][start:stop], dtype=float)
@@ -171,7 +187,7 @@ def _compute_cached(
                     np.sum((sic >= ICE_THRESHOLD) * weighted[None], axis=(-2, -1))
                     / weighted.sum()
                 )
-            zonal_weight = latitude_weights[::-1]
+            zonal_weight = latitude_weights
             scalars["global_toa_imbalance"][start:stop] = (
                 toa @ zonal_weight / zonal_weight.sum()
             )
@@ -181,6 +197,28 @@ def _compute_cached(
             scalars["southern_coupling_flux"][start:stop] = (
                 flux[:, flux_rows] @ wet_area[flux_rows] / wet_area[flux_rows].sum()
             )
+            for name, source_name in (
+                ("southern_toa_shortwave", "rst"),
+                ("southern_toa_longwave", "rlut"),
+                ("southern_toa_reflected_shortwave", "rsut"),
+            ):
+                values = np.asarray(source.variables[source_name][start:stop], dtype=float)
+                scalars[name][start:stop] = weighted_mean(
+                    values, area * np.broadcast_to(south, lsm.shape)
+                )
+            for name, source_name in (
+                ("south_atlantic_surface_shortwave", "rss"),
+                ("south_atlantic_surface_longwave", "rls"),
+                ("south_atlantic_sensible_heat_flux", "hfss"),
+                ("south_atlantic_latent_heat_flux", "hfls"),
+                ("south_atlantic_surface_albedo", "as"),
+                ("south_atlantic_snow_depth", "snd"),
+            ):
+                values = np.asarray(source.variables[source_name][start:stop], dtype=float)
+                scalars[name][start:stop] = weighted_mean(values, area * surface_sector)
+            scalars["global_lsg_ice_volume"][start:stop] = np.asarray(
+                source.variables["global_lsg_ice_volume"][start:stop], dtype=float
+            )
 
     return xr.Dataset(
         {
@@ -189,11 +227,16 @@ def _compute_cached(
                 ("year", "box", "depth_band"), box_temperature,
                 {"units": "K", "weighting": "native wet-cell volume within each depth band and box"},
             ),
+            "ocean_box_salinity": (
+                ("year", "box", "upper_depth_band"), box_salinity,
+                {"units": "0/00", "weighting": "native wet-cell volume within each upper depth band and box"},
+            ),
         },
         coords={
             "year": years,
             "box": ["global_ocean", "south_atlantic_0_60s"],
             "depth_band": [label for label, _, _ in OCEAN_BOX_BANDS],
+            "upper_depth_band": [label for label, _, _ in OCEAN_BOX_BANDS[:4]],
         },
         attrs={
             "source_archive": archive.name,
@@ -201,6 +244,7 @@ def _compute_cached(
             "southern_ice_area_definition": "sum of annual mean SIC times T21 Gaussian-grid ocean-cell area south of the equator; m2",
             "ocean_box_definition": "global wet ocean or South Atlantic wet ocean between 60 S and the equator",
             "surface_box_definition": "area-weighted T21 ts over ocean cells between 60 S and the equator, 65 W to 20 E",
+            "new_surface_field_definition": "T21 Gaussian-area means; TOA over the Southern Hemisphere, surface fields over South Atlantic ocean cells (60 S–0, 65 W–20 E); source signs retained",
             "temporal_processing": "annual raw values; no smoothing, detrending, or filtering",
         },
     )
