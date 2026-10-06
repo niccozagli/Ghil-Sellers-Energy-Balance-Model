@@ -18,7 +18,11 @@ from gsebm.plasim_diagnostics import (
     amoc_diagnostics_for_file,
     atmospheric_diagnostics_for_file,
     build_lsg_ocean_diagnostics,
+    cold_branch_atmospheric_diagnostics_for_file,
+    extended_lsg_diagnostics_for_file,
+    ice_cap_diagnostics_for_file,
     lsg_ocean_diagnostics_for_file,
+    lsg_total_heat_content_for_file,
     lsg_diagnostics_for_file,
     temperature_diagnostics_for_file,
     zonal_temperature_for_file,
@@ -89,6 +93,11 @@ def plasim_dataset() -> xr.Dataset:
             "rlut": (("time", "lat", "lon"), -(205.0 + 0.4 * pattern)),
             "lsm": (("time", "lat", "lon"), land_sea_mask),
             "as": (("time", "lat", "lon"), surface_albedo),
+            "snd": (("time", "lat", "lon"), np.where(land_sea_mask > 0, 0.1, 0.0)),
+            "rss": (("time", "lat", "lon"), 100.0 + 0.1 * pattern),
+            "rls": (("time", "lat", "lon"), -40.0 - 0.05 * pattern),
+            "hfss": (("time", "lat", "lon"), -20.0 + 0.01 * pattern),
+            "hfls": (("time", "lat", "lon"), -39.0 - 0.02 * pattern),
             "sic": (("time", "lat", "lon"), sea_ice_concentration),
             "sit": (("time", "lat", "lon"), sea_ice_thickness),
         },
@@ -437,6 +446,91 @@ ATL max (NADW)   : 10.0 11.0 12.0
             diagnostics["amoc_strength"], [2.5, 7.0, 10.0]
         )
 
+    def test_extended_lsg_parser_extracts_all_printed_diagnostics(self) -> None:
+        diagnostic_text = """\
+* LSG timestep 1 date: 10-Jan-9500 *
+Maximum of barotropic streamfunction in Sv  61.6 at lon= -69. lat= -26.
+Upw.transports in Sv  1 2 3 4 5 6
+Conv.adjustm. events: 10 20 30 40 50 60
+Icevol. m**3  0.100E+15 icecov.area m**2  0.200E+14 Av.thickness in m  5.0
+Iceareas: 18.0 2.0 90.0 10.0
+ATL max (NADW)   : 10 20 30
+ATL min (AABW)   : -1 -2 -3
+PAC max (outflow): 4 5 6
+PAC min (inflow) : -4 -5 -6
+"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "EXPERIMENT_DIAG.10000-10000.txt"
+            path.write_text(diagnostic_text, encoding="utf-8")
+            diagnostics = extended_lsg_diagnostics_for_file(path)
+
+        self.assertEqual(float(diagnostics["atl_aabw_min_16_44n"].item()), -2.0)
+        self.assertEqual(float(diagnostics["pac_outflow_max_30s"].item()), 6.0)
+        self.assertEqual(float(diagnostics["barotropic_streamfunction_max"].item()), 61.6)
+        np.testing.assert_allclose(diagnostics["upwelling_transport"], [[1, 2, 3, 4, 5, 6]])
+        np.testing.assert_allclose(
+            diagnostics["convective_adjustment_event_count"], [[10, 20, 30, 40, 50, 60]]
+        )
+
+    def test_cold_branch_atmospheric_diagnostics_have_known_edges_and_fluxes(self) -> None:
+        source = plasim_dataset()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "EXPERIMENT_PLA.2000-2001.nc"
+            source.to_netcdf(path, engine="scipy")
+            scalar, zonal = cold_branch_atmospheric_diagnostics_for_file(path)
+
+        expected_surface = (
+            source["rss"] + source["rls"] + source["hfss"] + source["hfls"]
+        ).mean("lon")
+        np.testing.assert_allclose(zonal["zonal_surface_net_heat_flux"], expected_surface)
+        self.assertGreater(float(scalar["northern_land_snow_covered_area"].min()), 0.0)
+        self.assertEqual(
+            scalar["northern_land_snow_covered_area"].attrs["cover_definition"],
+            "land grid cells with annual-mean snd > 0 m",
+        )
+        self.assertLess(
+            abs(float(zonal["zonal_atmospheric_heat_transport"].isel(lat=-1).mean())),
+            1.0e16,
+        )
+
+    def test_ice_cap_diagnostics_use_ocean_and_gaussian_area(self) -> None:
+        nodes, weights = np.polynomial.legendre.leggauss(4)
+        latitude = np.degrees(np.arcsin(nodes))[::-1]
+        shape = (1, 4, 2)
+        land = np.zeros(shape)
+        land[:, 0, 1] = 1.0
+        thickness = np.zeros(shape)
+        thickness[:, 0, 0] = 9.0
+        thickness[:, 3, :] = 9.0
+        flux = np.broadcast_to(np.arange(4)[None, :, None], shape).astype(float)
+        source = xr.Dataset(
+            {
+                "iced": (("time", "lat", "lon"), thickness),
+                "cfluxra": (("time", "lat", "lon"), flux),
+                "ls": (("time", "lat", "lon"), land),
+            },
+            coords={"time": [20000101.5], "lat": latitude, "lon": [0.0, 180.0]},
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "EXPERIMENT_ICE.2000-2000.nc"
+            source.to_netcdf(path, engine="scipy")
+            diagnostics = ice_cap_diagnostics_for_file(path)
+
+        expected_north = weights[-1] / (weights[-1] + 2.0 * weights[-2])
+        expected_south = weights[0] / (weights[0] + weights[1])
+        self.assertAlmostEqual(
+            float(diagnostics["northern_ice_cap_ocean_area_fraction"].item()),
+            expected_north,
+        )
+        self.assertAlmostEqual(
+            float(diagnostics["southern_ice_cap_ocean_area_fraction"].item()),
+            expected_south,
+        )
+        self.assertAlmostEqual(
+            float(diagnostics["global_ice_cap_correction_flux"].item()),
+            np.average(np.arange(4), weights=weights[::-1]),
+        )
+
     def test_filename_years_override_offset_lsg_calendar(self) -> None:
         """PLASIM file ranges are canonical when the printed calendar is offset."""
         diagnostic_text = """\
@@ -493,6 +587,32 @@ ATL max (NADW)   : 4.0 5.0 6.0
         )
         np.testing.assert_allclose(
             diagnostics["ocean_heat_content"].isel(year=0), expected_heat_content
+        )
+
+    def test_full_depth_heat_content_includes_all_wet_levels(self) -> None:
+        source = lsg_ocean_dataset()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "EXPERIMENT_LSG.2000-2001.nc"
+            source.to_netcdf(path)
+            diagnostics = lsg_total_heat_content_for_file(path)
+
+        volume = float(diagnostics["full_depth_ocean_volume"])
+        expected = (
+            LSG_REFERENCE_DENSITY_KG_M3
+            * LSG_SPECIFIC_HEAT_J_KG_K
+            * (280.0 - LSG_REFERENCE_TEMPERATURE_K)
+            * volume
+        )
+        self.assertAlmostEqual(
+            float(diagnostics["full_depth_ocean_heat_content"].isel(year=0)),
+            expected,
+            delta=abs(expected) * 1.0e-12,
+        )
+        delta = float(np.diff(diagnostics["full_depth_ocean_heat_content"])[0])
+        self.assertAlmostEqual(
+            delta,
+            LSG_REFERENCE_DENSITY_KG_M3 * LSG_SPECIFIC_HEAT_J_KG_K * volume,
+            delta=abs(delta) * 1.0e-12,
         )
 
     def test_build_ocean_diagnostics_sorts_files_and_rejects_year_gaps(self) -> None:
