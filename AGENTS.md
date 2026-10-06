@@ -14,6 +14,10 @@ latitude `x in [-1, 1]`. It combines latitude-dependent heat capacity,
 diffusive meridional heat transport, outgoing longwave radiation, absorbed
 shortwave radiation, and temperature-dependent albedo.
 
+The repository also hosts a PlaSim-LSG analysis pipeline (raw-map
+extraction, Southern Ocean diagnostics, and Koopman/KDMD analysis); see
+"PlaSim Pipeline" below.
+
 The code is an active research codebase. Prefer small, well-tested changes
 that preserve the model's documented numerical and physical behavior. The
 MATLAB files can be useful historical context, but new work does not need to
@@ -25,6 +29,10 @@ mirror their structure or implementation choices.
 - `tests/`: `unittest` test suite.
 - `scripts/`: Typer command-line entry points for research runs.
 - `analysis/`: marimo analysis notebooks/apps for saved datasets.
+- `Claude/`: reports written by earlier agent runs, kept for reference only.
+- `external/Koopman-Dynamical-Response`: git submodule providing the
+  `koopman_response` KDMD package (uv workspace member).
+- `PLASIM_INFO/`: PlaSim build and cluster run notes (gitignored).
 - `matlab/`: archived original MATLAB implementation. Use it only for
   historical context or when the user explicitly asks for MATLAB comparison.
 - `data/`: generated NetCDF datasets, ignored by git.
@@ -53,6 +61,18 @@ mirror their structure or implementation choices.
 - `plotting.py`: matplotlib plotting helpers.
 - `paths.py`: repository and data-directory helpers.
 - `time.py`: physical time-unit constants.
+
+PlaSim modules (see "PlaSim Pipeline"):
+
+- `plasim_diagnostics.py`: per-file PlaSim/LSG readers and geometry helpers
+  used by the raw-map extractor. It also holds unused older diagnostics; keep
+  `amoc_diagnostics_for_file`, which is planned for the extractor.
+- `plasim_raw_maps.py`: raw-map and basin-mask archive extraction, plus
+  `raw_map_root()`.
+- `plasim_exploratory.py`, `plasim_composites.py`, `plasim_vertical_timing.py`:
+  in-memory diagnostics for `analysis/Plasim_Southern_Ocean_Diagnostics.py`.
+- `plasim_koopman_single.py`: single-lag South Atlantic KDMD fit and figures
+  for `analysis/Koopman_analysis.py`.
 
 ## Development Commands
 
@@ -87,6 +107,34 @@ Run scripts with `PYTHONPATH=src`, for example:
 ```bash
 PYTHONPATH=src python3 scripts/run_warm_cold_state.py --help
 ```
+
+## PlaSim Pipeline
+
+The maintained PlaSim workflow has three stages:
+
+1. Extraction: `scripts/extract_plasim_raw_maps.py` writes
+   `<experiment>_spinup_raw_maps.nc` and `<experiment>_spinup_basin_masks.nc`
+   per experiment. Details are in `Plasim_Raw_Map_Extraction.md`.
+2. Checking: `analysis/Plasim_Southern_Ocean_Diagnostics.py` (marimo) computes
+   annual climate, ocean-box, and ice-cycle composite diagnostics in memory.
+3. Koopman analysis: `analysis/Koopman_analysis.py` (marimo) fits KDMD on the
+   South Atlantic zonal state using `plasim_koopman_single.py`.
+
+Conventions:
+
+- Archives live under `raw_map_root()`: `PLASIM_RAW_MAP_ROOT` if set,
+  otherwise `data/Plasim`. The Southern Ocean notebook also picks
+  `/Volumes/Nicco/Plasim/extracted` when that drive is mounted.
+- The raw-map archive is the only extracted product. Do not reintroduce
+  separate diagnostics, ocean-diagnostics, mechanism-field, or layer-map
+  extraction scripts. Add new fields to the raw-map schema instead, and
+  update `tests/test_plasim_raw_maps.py`.
+- Analyses read archives and compute derived quantities in memory or in
+  notebooks. Do not write derived data products next to the archives
+  unless the user asks.
+- Do not add one-off analysis scripts or task/goal markdown files to the
+  repository root or `analysis/`. Put exploratory work in `prototyping/` or
+  the scratchpad, and remove it when done.
 
 ## Numerical and Domain Conventions
 
@@ -130,6 +178,9 @@ PYTHONPATH=src python3 scripts/run_warm_cold_state.py --help
   possible so tests remain practical.
 - For workflow or CLI changes, update `tests/test_run.py`.
 - For saved-dataset diagnostics, update `tests/test_diagnostics.py`.
+- For PlaSim extraction, update `tests/test_plasim_raw_maps.py`,
+  `tests/test_plasim_diagnostics.py`, and
+  `tests/test_plasim_mechanism_fields.py`.
 
 ## Coding Style
 
