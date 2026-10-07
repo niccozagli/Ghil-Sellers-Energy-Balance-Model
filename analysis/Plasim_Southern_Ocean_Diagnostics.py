@@ -13,7 +13,7 @@ def _():
     import matplotlib.pyplot as plt
     import numpy as np
     from scipy.signal import welch
-    from gsebm.plasim_raw_maps import raw_map_root
+    from gsebm.plasim_raw_maps import RAW_MAP_ROOTS
     from gsebm.plasim_composites import (
         compute_map_composite, phase_sampling_schedule, prepare_cycle_preview,
     )
@@ -24,6 +24,7 @@ def _():
 
     return (
         LAYER_NAMES,
+        RAW_MAP_ROOTS,
         REGIONS,
         compute_diagnostics,
         compute_map_composite,
@@ -34,7 +35,6 @@ def _():
         phase_sampling_schedule,
         plt,
         prepare_cycle_preview,
-        raw_map_root,
         welch,
     )
 
@@ -61,24 +61,22 @@ def _(mo):
 
 
 @app.cell
-def _(mo, raw_map_root):
-    import os
-    from pathlib import Path
+def _(RAW_MAP_ROOTS, mo):
+    selected_root = mo.ui.dropdown(
+        options=RAW_MAP_ROOTS, value="repo", label="Archive root",
+    )
+    selected_root
+    return (selected_root,)
 
-    _root = raw_map_root()
-    _external_root = Path("/Volumes/Nicco/Plasim/extracted")
-    if (
-        "PLASIM_RAW_MAP_ROOT" not in os.environ
-        and _external_root.is_dir()
-        and any(_external_root.glob("*/*_spinup_raw_maps.nc"))
-    ):
-        _root = _external_root
+
+@app.cell
+def _(mo, selected_root):
+    _root = selected_root.value
     archives = {
         _path.parent.name.removeprefix("CONTROL_360ppm_T21L10_10000Y_MU_"): _path
         for _path in sorted(_root.glob("*/*_spinup_raw_maps.nc"))
     }
-    if not archives:
-        raise FileNotFoundError(f"No raw-map archives found in {_root}")
+    mo.stop(not archives, mo.md(f"No raw-map archives in `{_root}`."))
     _options = sorted(
         archives,
         key=lambda _value: (
@@ -203,7 +201,16 @@ def _(mo):
 
 
 @app.cell
-def _(diagnostics, field_view, np, plt, selected_mu, visible_years, window, years):
+def _(
+    diagnostics,
+    field_view,
+    np,
+    plt,
+    selected_mu,
+    visible_years,
+    window,
+    years,
+):
     _anomaly = field_view.value == "Window anomaly"
     _figure, _axes = plt.subplots(3, 2, figsize=(13, 10), sharex=True)
     _groups = (

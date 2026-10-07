@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-import h5netcdf
+import h5py
 import numpy as np
 from scipy.ndimage import uniform_filter1d
 from scipy.signal import detrend as signal_detrend
@@ -223,28 +223,28 @@ def _compute_cached(
         np.asarray(peaks), last_year - first_year + 1, smooth_years,
         max_phase, min_before_phase, min_after_phase,
     )
-    with h5netcdf.File(archive_name, "r") as source:
-        all_years = np.asarray(source.variables["year"][:], dtype=int)
+    with h5py.File(archive_name, "r") as source:
+        all_years = np.asarray(source["year"][:], dtype=int)
         start = int(np.searchsorted(all_years, first_year))
         stop = int(np.searchsorted(all_years, last_year, side="right"))
         if stop - start != last_year - first_year + 1 or (
             all_years[start] != first_year or all_years[stop - 1] != last_year
         ):
             raise ValueError("Selected years are missing from the raw-map archive.")
-        lat = np.asarray(source.variables["t21_lat"][:], dtype=float)
-        lon = np.asarray(source.variables["t21_lon"][:], dtype=float)
-        lsm = np.asarray(source.variables["lsm"][:], dtype=float)
-        lsg_lat = np.asarray(source.variables["lat"][:], dtype=float)
-        lsg_lon = np.asarray(source.variables["lon"][:], dtype=float)
-        vector_lat = np.asarray(source.variables["lat_2"][:], dtype=float)
-        vector_lon = np.asarray(source.variables["lon_2"][:], dtype=float)
-        u_mean = np.asarray(source.variables["u_mean_150_300m"][:], dtype=float)
-        v_mean = np.asarray(source.variables["v_mean_150_300m"][:], dtype=float)
-        wet = np.asarray(source.variables["wet"][3:6], dtype=bool).any(axis=0)
-        vector_wet = np.asarray(source.variables["wetvec"][3:6], dtype=bool).any(axis=0)
+        lat = np.asarray(source["t21_lat"][:], dtype=float)
+        lon = np.asarray(source["t21_lon"][:], dtype=float)
+        lsm = np.asarray(source["lsm"][:], dtype=float)
+        lsg_lat = np.asarray(source["lat"][:], dtype=float)
+        lsg_lon = np.asarray(source["lon"][:], dtype=float)
+        vector_lat = np.asarray(source["lat_2"][:], dtype=float)
+        vector_lon = np.asarray(source["lon_2"][:], dtype=float)
+        u_mean = np.asarray(source["u_mean_150_300m"][:], dtype=float)
+        v_mean = np.asarray(source["v_mean_150_300m"][:], dtype=float)
+        wet = np.asarray(source["wet"][3:6], dtype=bool).any(axis=0)
+        vector_wet = np.asarray(source["wetvec"][3:6], dtype=bool).any(axis=0)
 
         surface = np.asarray(
-            source.variables["surface_temperature"][start:stop], dtype=np.float32
+            source["surface_temperature"][start:stop], dtype=np.float32
         )
         surface_difference = _sample_difference(
             _preprocess_map(surface, detrend_method, smooth_years), positions
@@ -252,7 +252,7 @@ def _compute_cached(
         del surface
 
         sic = np.asarray(
-            source.variables["sea_ice_concentration"][start:stop], dtype=np.float32
+            source["sea_ice_concentration"][start:stop], dtype=np.float32
         )
         mean_sic = np.mean(sic, axis=0, dtype=np.float64)
         if show_edge_cells:
@@ -270,7 +270,7 @@ def _compute_cached(
         del sic
 
         theta = np.asarray(
-            source.variables["theta_layer_150_300m"][start:stop], dtype=np.float32
+            source["theta_layer_150_300m"][start:stop], dtype=np.float32
         )
         processed_theta = _preprocess_map(theta, detrend_method, smooth_years)
         theta_difference = _sample_difference(processed_theta, positions)
@@ -282,7 +282,7 @@ def _compute_cached(
         snapshots[:, ~wet] = np.nan
         current_snapshots = []
         for name in ("u_layer_150_300m", "v_layer_150_300m"):
-            current = np.asarray(source.variables[name][start:stop], dtype=np.float32)
+            current = np.asarray(source[name][start:stop], dtype=np.float32)
             processed_current = _preprocess_map(current, detrend_method, smooth_years)
             phase_current = _sample_phase_maps(processed_current, pathway_positions)
             phase_current[:, ~vector_wet] = np.nan

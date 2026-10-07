@@ -22,6 +22,7 @@ import h5netcdf
 import numpy as np
 import xarray as xr
 
+from gsebm.paths import get_repo_root
 from gsebm.plasim_diagnostics import (
     _layer_overlap_thickness,
     _lsg_ocean_geometry,
@@ -78,12 +79,17 @@ SOURCE_COLUMNS = (
 
 
 def raw_map_root() -> Path:
-    """Return the selected archive root, defaulting to repository data."""
+    """Return the extractor's default output root, defaulting to repository data."""
     configured = os.environ.get("PLASIM_RAW_MAP_ROOT")
     if configured:
         return Path(configured).expanduser()
-    from gsebm.paths import get_data_dir
-    return get_data_dir(create=False) / "Plasim"
+    return REPO_RAW_MAP_ROOT
+
+
+REPO_RAW_MAP_ROOT = get_repo_root() / "data" / "Plasim"
+EXTERNAL_RAW_MAP_ROOT = Path("/Volumes/Nicco/Plasim/extracted")
+# Archive roots the analysis notebooks choose between explicitly.
+RAW_MAP_ROOTS = {"repo": REPO_RAW_MAP_ROOT, "external drive": EXTERNAL_RAW_MAP_ROOT}
 
 
 @dataclass(frozen=True)

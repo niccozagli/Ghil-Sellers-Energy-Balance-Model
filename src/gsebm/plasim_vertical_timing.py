@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-import h5netcdf
+import h5py
 import numpy as np
 from scipy.ndimage import uniform_filter1d
 
@@ -78,22 +78,22 @@ def _compute_cached(
     if len(positions) < 3:
         raise ValueError("Fewer than three complete cycles remain in the selected years.")
 
-    with h5netcdf.File(archive_name, "r") as source:
-        all_years = np.asarray(source.variables["year"][:], dtype=int)
+    with h5py.File(archive_name, "r") as source:
+        all_years = np.asarray(source["year"][:], dtype=int)
         start = int(np.searchsorted(all_years, first_year))
         stop = int(np.searchsorted(all_years, last_year, side="right"))
         if stop - start != length or all_years[start] != first_year or all_years[stop - 1] != last_year:
             raise ValueError("Selected years are missing from the raw-map archive.")
 
-        depths = np.asarray(source.variables["lsg_depth"][:], dtype=float)
+        depths = np.asarray(source["lsg_depth"][:], dtype=float)
         depth_indices = np.flatnonzero(depths < 1000)
-        row_lat = np.asarray(source.variables["lsg_lat"][:], dtype=float)
-        row_volume = np.asarray(source.variables["wet_volume"][:], dtype=float)
-        ocean_lat = np.asarray(source.variables["lat"][:], dtype=float)
-        ocean_lon = _wrap(np.asarray(source.variables["lon"][:], dtype=float))
-        t21_lat = np.asarray(source.variables["t21_lat"][:], dtype=float)
-        t21_lon = _wrap(np.asarray(source.variables["t21_lon"][:], dtype=float))
-        lsm = np.asarray(source.variables["lsm"][:], dtype=float)
+        row_lat = np.asarray(source["lsg_lat"][:], dtype=float)
+        row_volume = np.asarray(source["wet_volume"][:], dtype=float)
+        ocean_lat = np.asarray(source["lat"][:], dtype=float)
+        ocean_lon = _wrap(np.asarray(source["lon"][:], dtype=float))
+        t21_lat = np.asarray(source["t21_lat"][:], dtype=float)
+        t21_lon = _wrap(np.asarray(source["t21_lon"][:], dtype=float))
+        lsm = np.asarray(source["lsm"][:], dtype=float)
         t21_lat_grid, t21_lon_grid = np.meshgrid(t21_lat, t21_lon, indexing="ij")
 
         row_masks = []
@@ -122,7 +122,7 @@ def _compute_cached(
         for offset in range(0, length, 128):
             end = min(offset + 128, length)
             slab = slice(start + offset, start + end)
-            zonal = np.asarray(source.variables["zonal_potential_temperature"][slab, :, :len(depth_indices)], dtype=float)
+            zonal = np.asarray(source["zonal_potential_temperature"][slab, :, :len(depth_indices)], dtype=float)
             for region, row_mask in enumerate(row_masks):
                 weights = row_volume[row_mask, :len(depth_indices)]
                 valid_zonal = np.isfinite(zonal[:, row_mask]) & (weights[None] > 0)
@@ -133,12 +133,12 @@ def _compute_cached(
                     out=np.full_like(numerator, np.nan), where=denominator > 0,
                 )
             for field_index, field_name in enumerate(LAYER_FIELDS):
-                layer = np.asarray(source.variables[field_name][slab], dtype=float)
+                layer = np.asarray(source[field_name][slab], dtype=float)
                 for region, mask in enumerate(ocean_masks):
                     boxes[offset:end, region, field_index] = np.nanmean(
                         layer[:, mask], axis=1
                     )
-            surface = np.asarray(source.variables["surface_temperature"][slab], dtype=float)
+            surface = np.asarray(source["surface_temperature"][slab], dtype=float)
             for region, mask in enumerate(surface_masks):
                 boxes[offset:end, region, -1] = np.nanmean(surface[:, mask], axis=1)
 

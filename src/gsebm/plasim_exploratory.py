@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-import h5netcdf
+import h5py
 import numpy as np
 import xarray as xr
 
@@ -59,29 +59,31 @@ def _compute_cached(
     del archive_size, archive_mtime_ns, mask_size, mask_mtime_ns
     archive = Path(archive_name)
     masks = mask_path(archive)
-    with h5netcdf.File(archive, "r") as source, h5netcdf.File(masks, "r") as basins:
-        years = np.asarray(source.variables["year"][:], dtype=np.int32)
+    # Read through h5py: h5netcdf re-resolves dimensions on every variable
+    # access, which dominates the run time for the ~100-variable archive.
+    with h5py.File(archive, "r") as source, h5py.File(masks, "r") as basins:
+        years = np.asarray(source["year"][:], dtype=np.int32)
         if years.size == 0 or not np.all(np.diff(years) == 1):
             raise ValueError(f"Missing or nonconsecutive annual records in {archive}")
-        lat = np.asarray(source.variables["t21_lat"][:], dtype=float)
-        lsm = np.asarray(source.variables["lsm"][:], dtype=float)
-        row_lat = np.asarray(source.variables["lat"][:], dtype=float).mean(axis=1)
-        depths = np.asarray(source.variables["upper_depth"][:], dtype=float)
-        depth_bounds = np.asarray(source.variables["depth_bounds"][:len(depths)], dtype=float)
-        volume = np.asarray(source.variables["wet_cell_volume"][:len(depths)], dtype=float)
-        sector = np.asarray(basins.variables["lsg_scalar_south_atlantic"][:], dtype=bool)
+        lat = np.asarray(source["t21_lat"][:], dtype=float)
+        lsm = np.asarray(source["lsm"][:], dtype=float)
+        row_lat = np.asarray(source["lat"][:], dtype=float).mean(axis=1)
+        depths = np.asarray(source["upper_depth"][:], dtype=float)
+        depth_bounds = np.asarray(source["depth_bounds"][:len(depths)], dtype=float)
+        volume = np.asarray(source["wet_cell_volume"][:len(depths)], dtype=float)
+        sector = np.asarray(basins["lsg_scalar_south_atlantic"][:], dtype=bool)
         sector_box = sector & (row_lat[:, None] >= -60) & (row_lat[:, None] < 0)
         surface_sector = (
-            np.asarray(basins.variables["t21_south_atlantic"][:], dtype=bool)
+            np.asarray(basins["t21_south_atlantic"][:], dtype=bool)
             & (lat[:, None] >= -60)
         )
-        wet_area = np.asarray(source.variables["wet_surface_area"][:], dtype=float)
-        flux_lat = np.asarray(source.variables["lsg_lat"][:], dtype=float)
+        wet_area = np.asarray(source["wet_surface_area"][:], dtype=float)
+        flux_lat = np.asarray(source["lsg_lat"][:], dtype=float)
 
         nodes, expected_weights = np.polynomial.legendre.leggauss(len(lat))
         if not np.allclose(lat, np.degrees(np.arcsin(nodes))[::-1], atol=1e-4):
             raise ValueError("T21 latitudes do not match the expected Gaussian grid.")
-        latitude_weights = np.asarray(source.variables["t21_gaussian_weight"][:], dtype=float)
+        latitude_weights = np.asarray(source["t21_gaussian_weight"][:], dtype=float)
         if not np.allclose(latitude_weights, expected_weights[::-1]):
             raise ValueError("Stored T21 Gaussian weights do not match the latitude grid.")
         area = latitude_weights[:, None] * np.ones_like(lsm)
@@ -105,13 +107,19 @@ def _compute_cached(
             upper_weights.append(tuple(volume * levels[:, None, None] * mask[None] for mask in box_masks))
         deep_weights = [
             tuple(
-                np.asarray(source.variables[f"deep_wet_volume_{label}"][:], dtype=float) * mask
+                np.asarray(source[f"deep_wet_volume_{label}"][:], dtype=float) * mask
                 for mask in box_masks
             )
             for label, _, _ in OCEAN_BOX_BANDS[4:]
         ]
         if any(weight.sum() <= 0 for band in (*upper_weights, *deep_weights) for weight in band):
             raise ValueError("An ocean box has no wet volume.")
+        # Normalized (band, box) weights as columns, so each block of upper
+        # maps reduces to all box means with a single matrix product.
+        upper_matrix = np.stack(
+            [weight.reshape(-1) / weight.sum() for band in upper_weights for weight in band],
+            axis=1,
+        )
 
         scalars = {
             name: np.empty(years.size, dtype=np.float32)
@@ -143,23 +151,26 @@ def _compute_cached(
 
         for start in range(0, years.size, 50):
             stop = min(start + 50, years.size)
-            surface = np.asarray(source.variables["surface_temperature"][start:stop], dtype=float)
-            sic = np.asarray(source.variables["sea_ice_concentration"][start:stop], dtype=float)
-            toa = np.asarray(source.variables["zonal_toa_energy_imbalance"][start:stop], dtype=float)
-            flux = np.asarray(source.variables["zonal_newtonian_coupling_heat_flux"][start:stop], dtype=float)
-            theta = np.asarray(source.variables["temperature_upper"][start:stop], dtype=float)
-            salinity = np.asarray(source.variables["salinity_upper"][start:stop], dtype=float)
-
-            for band_index, band_weights in enumerate(upper_weights):
-                for box_index, weight in enumerate(band_weights):
-                    box_temperature[start:stop, box_index, band_index] = (
-                        np.nansum(theta * weight[None], axis=(1, 2, 3)) / weight.sum()
-                    )
-                    box_salinity[start:stop, box_index, band_index] = (
-                        np.nansum(salinity * weight[None], axis=(1, 2, 3)) / weight.sum()
-                    )
+            surface = np.asarray(source["surface_temperature"][start:stop], dtype=float)
+            sic = np.asarray(source["sea_ice_concentration"][start:stop], dtype=float)
+            toa = np.asarray(source["zonal_toa_energy_imbalance"][start:stop], dtype=float)
+            flux = np.asarray(source["zonal_newtonian_coupling_heat_flux"][start:stop], dtype=float)
+            for name, target in (
+                ("temperature_upper", box_temperature),
+                ("salinity_upper", box_salinity),
+            ):
+                # NaN contributes zero, as in a nansum over the weighted cells.
+                values = np.nan_to_num(
+                    np.asarray(source[name][start:stop], dtype=float),
+                    nan=0.0, posinf=np.inf, neginf=-np.inf,
+                ).reshape(stop - start, -1)
+                target[start:stop, :, :len(upper_weights)] = (
+                    (values @ upper_matrix)
+                    .reshape(stop - start, len(upper_weights), len(box_masks))
+                    .transpose(0, 2, 1)
+                )
             for deep_index, (label, _, _) in enumerate(OCEAN_BOX_BANDS[4:]):
-                deep_map = np.asarray(source.variables[f"temperature_{label}"][start:stop], dtype=float)
+                deep_map = np.asarray(source[f"temperature_{label}"][start:stop], dtype=float)
                 for box_index, weight in enumerate(deep_weights[deep_index]):
                     box_temperature[start:stop, box_index, deep_index + 4] = (
                         np.nansum(deep_map * weight[None], axis=(1, 2)) / weight.sum()
@@ -202,7 +213,7 @@ def _compute_cached(
                 ("southern_toa_longwave", "rlut"),
                 ("southern_toa_reflected_shortwave", "rsut"),
             ):
-                values = np.asarray(source.variables[source_name][start:stop], dtype=float)
+                values = np.asarray(source[source_name][start:stop], dtype=float)
                 scalars[name][start:stop] = weighted_mean(
                     values, area * np.broadcast_to(south, lsm.shape)
                 )
@@ -214,10 +225,10 @@ def _compute_cached(
                 ("south_atlantic_surface_albedo", "as"),
                 ("south_atlantic_snow_depth", "snd"),
             ):
-                values = np.asarray(source.variables[source_name][start:stop], dtype=float)
+                values = np.asarray(source[source_name][start:stop], dtype=float)
                 scalars[name][start:stop] = weighted_mean(values, area * surface_sector)
             scalars["global_lsg_ice_volume"][start:stop] = np.asarray(
-                source.variables["global_lsg_ice_volume"][start:stop], dtype=float
+                source["global_lsg_ice_volume"][start:stop], dtype=float
             )
 
     return xr.Dataset(

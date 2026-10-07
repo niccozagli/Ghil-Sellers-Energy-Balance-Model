@@ -122,9 +122,14 @@ The maintained PlaSim workflow has three stages:
 
 Conventions:
 
-- Archives live under `raw_map_root()`: `PLASIM_RAW_MAP_ROOT` if set,
-  otherwise `data/Plasim`. The Southern Ocean notebook also picks
-  `/Volumes/Nicco/Plasim/extracted` when that drive is mounted.
+- Archives live under one of two explicit roots, `RAW_MAP_ROOTS` in
+  `plasim_raw_maps.py`: `"repo"` (`data/Plasim`) or `"external drive"`
+  (`/Volumes/Nicco/Plasim/extracted`). Both notebooks pick the root with an
+  "Archive root" dropdown, and the Koopman loader functions take the root as
+  an argument. Do not add automatic root detection or result caches; copy
+  archives into `data/Plasim` when faster reads are needed (the drive reads at
+  about 30 MB/s). The extractor writes to `--output-root`, defaulting to
+  `PLASIM_RAW_MAP_ROOT` or `data/Plasim` (`raw_map_root()`).
 - The raw-map archive is the only extracted product. Do not reintroduce
   separate diagnostics, ocean-diagnostics, mechanism-field, or layer-map
   extraction scripts. Add new fields to the raw-map schema instead, and
@@ -181,6 +186,8 @@ Conventions:
 - For PlaSim extraction, update `tests/test_plasim_raw_maps.py`,
   `tests/test_plasim_diagnostics.py`, and
   `tests/test_plasim_mechanism_fields.py`.
+- For Koopman mode estimates (`observable_modes`, `regression_modes`, ...),
+  update `tests/test_plasim_koopman_single.py`.
 
 ## Coding Style
 
