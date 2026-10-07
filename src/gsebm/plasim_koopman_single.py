@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
@@ -18,7 +19,7 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.lines import Line2D
 from scipy.spatial.distance import pdist
 
-from gsebm.plasim_raw_maps import raw_map_root
+from gsebm.plasim_raw_maps import RAW_MAP_ROOTS
 from koopman_response import KoopmanSpectrumKDMD
 from koopman_response.algorithms import KernelDMD, WeightedGaussianKernel
 from koopman_response.algorithms.regularization import TSVDRegularizer
@@ -33,9 +34,8 @@ PHASE_MAP = LinearSegmentedColormap.from_list(
 )
 
 
-def available_mu_values() -> list[str]:
-    """List μ values with both a raw-map archive and its basin masks."""
-    root = raw_map_root()
+def available_mu_values(root: Path) -> list[str]:
+    """List μ values under ``root`` with both a raw-map archive and its basin masks."""
     values = []
     for path in root.glob(f"{EXPERIMENT_PREFIX}*/*_spinup_raw_maps.nc"):
         experiment = path.parent.name
@@ -43,35 +43,41 @@ def available_mu_values() -> list[str]:
             continue
         if path.with_name(f"{experiment}_spinup_basin_masks.nc").is_file():
             values.append(experiment.removeprefix(EXPERIMENT_PREFIX))
-    return sorted(values, key=lambda value: float(value.replace("p", ".")))
-
-
-def source_file(mu: str = MU) -> Path:
-    """Return the raw-map archive for the selected PlaSim μ."""
-    experiment = f"{EXPERIMENT_PREFIX}{mu}"
-    path = (
-        raw_map_root()
-        / experiment
-        / f"{experiment}_spinup_raw_maps.nc"
+    # Variants such as "1235_new_IC" sort after the plain run at the same μ.
+    return sorted(
+        values,
+        key=lambda value: (float(value.split("_", 1)[0].replace("p", ".")), value),
     )
+
+
+def source_file(root: Path, mu: str = MU) -> Path:
+    """Return the raw-map archive for the selected PlaSim μ under ``root``."""
+    experiment = f"{EXPERIMENT_PREFIX}{mu}"
+    path = root / experiment / f"{experiment}_spinup_raw_maps.nc"
     if not path.is_file():
         raise FileNotFoundError(f"Missing mu={mu} raw-map archive: {path}")
     return path
 
 
-def basin_mask_file(mu: str = MU) -> Path:
+def basin_mask_file(root: Path, mu: str = MU) -> Path:
     """Return the basin masks extracted alongside the selected raw maps."""
     experiment = f"{EXPERIMENT_PREFIX}{mu}"
-    path = source_file(mu).with_name(f"{experiment}_spinup_basin_masks.nc")
+    path = source_file(root, mu).with_name(f"{experiment}_spinup_basin_masks.nc")
     if not path.is_file():
         raise FileNotFoundError(f"Missing mu={mu} basin masks: {path}")
     return path
 
 
-def load_fields(start_year: int, maximum_depth: float, mu: str = MU) -> dict[str, np.ndarray]:
-    """Build South Atlantic zonal temperature states from native annual maps."""
-    with xr.open_dataset(source_file(mu)) as dataset, xr.open_dataset(
-        basin_mask_file(mu)
+def load_fields(
+    root: Path, start_year: int, maximum_depth: float, mu: str = MU,
+    end_year: int | None = None,
+) -> dict[str, np.ndarray]:
+    """Build South Atlantic zonal temperature states from native annual maps.
+
+    Years after ``start_year`` are used, through ``end_year`` when given.
+    """
+    with xr.open_dataset(source_file(root, mu)) as dataset, xr.open_dataset(
+        basin_mask_file(root, mu)
     ) as masks:
         required = {
             "depth_bounds", "lat", "lsg_horizontal_area",
@@ -87,8 +93,16 @@ def load_fields(start_year: int, maximum_depth: float, mu: str = MU) -> dict[str
             raise ValueError(f"The mu={mu} basin masks lack {sorted(missing_masks)}")
 
         all_years = np.asarray(dataset.year.values, dtype=int)
-        first = int(np.searchsorted(all_years, start_year, side="right"))
-        years = all_years[first:]
+        # Select by label rather than searchsorted: corrupt blocks elsewhere in
+        # the archive can carry wrong (unsorted) year labels.
+        selected = (all_years > start_year) & (
+            True if end_year is None else all_years <= end_year
+        )
+        if not selected.any():
+            raise ValueError("No annual records in the requested window")
+        first = int(np.flatnonzero(selected)[0])
+        last = int(np.flatnonzero(selected)[-1]) + 1
+        years = all_years[first:last]
         if years.size < 100 or not np.all(np.diff(years) == 1):
             raise ValueError("The stationary annual record is too short or discontinuous")
 
@@ -133,7 +147,7 @@ def load_fields(start_year: int, maximum_depth: float, mu: str = MU) -> dict[str
         surface_count = sector_surface.sum(axis=1)
         surface_maps = np.asarray(
             dataset.surface_temperature.isel(
-                year=slice(first, None), t21_lat=surface_rows
+                year=slice(first, last), t21_lat=surface_rows
             ).values,
             dtype=float,
         )
@@ -148,7 +162,7 @@ def load_fields(start_year: int, maximum_depth: float, mu: str = MU) -> dict[str
 
         ice_concentration = np.asarray(
             dataset.sea_ice_concentration.isel(
-                year=slice(first, None), t21_lat=surface_rows
+                year=slice(first, last), t21_lat=surface_rows
             ).values,
             dtype=float,
         )
@@ -162,6 +176,10 @@ def load_fields(start_year: int, maximum_depth: float, mu: str = MU) -> dict[str
         ice_area = np.nansum(
             ice_concentration * ice_cell_area[None], axis=(1, 2)
         ) / 1.0e12  # m² to 10^6 km²
+        ice_rows = np.nansum(
+            ice_concentration * ice_cell_area[None], axis=2
+        ) / 1.0e12  # basin ice area per T21 row, 10^6 km²
+        ice_row_area = ice_cell_area.sum(axis=1)
 
         sector_native = native_mask[native_rows]
         wet_volume = np.asarray(
@@ -257,7 +275,43 @@ def load_fields(start_year: int, maximum_depth: float, mu: str = MU) -> dict[str
         "ocean_weights": ocean_weights,
         "ice_area": ice_area,
         "ice_anomaly": ice_area - ice_area.mean(),
+        "ice_rows_anomaly": ice_rows - ice_rows.mean(axis=0),
+        "ice_row_lat": surface_lat,
+        "ice_row_weights": ice_row_area / ice_row_area.sum(),
     }
+
+
+STATE_BLOCKS = {
+    # name: (values key, latitude key, weights key)
+    "surface": ("surface_anomaly", "surface_lat", "surface_weights"),
+    "ocean": ("ocean_anomaly", "ocean_lat", "ocean_weights"),
+    "ice": ("ice_rows_anomaly", "ice_row_lat", "ice_row_weights"),
+}
+
+
+def combined_state(
+    fields: dict[str, np.ndarray], blocks: tuple[str, ...] = ("surface", "ocean"),
+) -> dict[str, np.ndarray]:
+    """Copy of ``fields`` whose Koopman state is the given blocks side by side.
+
+    ``"ice"`` is the basin sea-ice area per T21 row; rows whose ice never
+    varies are dropped. Each block keeps its own weights, and ``fit_koopman``
+    scales each block by its own median pairwise distance.
+    """
+    columns, layout, start = [], [], 0
+    for name in blocks:
+        values_key, lat_key, weights_key = STATE_BLOCKS[name]
+        values = np.asarray(fields[values_key], dtype=float)
+        weights = np.asarray(fields[weights_key], dtype=float)
+        keep = values.std(axis=0) > 1e-9
+        if not keep.any():
+            raise ValueError(f"The {name} block has no varying rows")
+        values, weights = values[:, keep], weights[keep]
+        columns.append(values)
+        layout.append((name, start, start + values.shape[1], weights / weights.sum(),
+                       np.asarray(fields[lat_key])[keep]))
+        start += values.shape[1]
+    return {**fields, "state": np.column_stack(columns), "state_blocks": layout}
 
 
 def kdmd_training_indices(
@@ -287,11 +341,6 @@ def extract_eigenmode(
     indices = kdmd_training_indices(
         fields["state"].shape[0], lag, maximum_training_snapshots, seed,
     )
-    if not np.allclose(
-        spectrum.reference_data, fields["state"][indices], rtol=1e-12, atol=1e-12,
-    ):
-        raise ValueError("KDMD reference states do not match the training indices")
-
     state = fields["state"]
     # Evaluate only the chosen eigenfunction instead of the full spectrum.
     coefficient = spectrum.U_r @ (
@@ -315,11 +364,7 @@ def extract_eigenmode(
     psi = raw_psi * scale
 
     observables = np.column_stack((fields["ice_anomaly"], state))
-    training = observables[indices]
-    mode = np.array([
-        spectrum.koopman_modes(training[:, column])[index] / scale
-        for column in range(training.shape[1])
-    ])
+    mode = observable_modes(spectrum, state, observables, indices, [index], [scale])[0]
     n_surface = fields["surface_lat"].size
     return {
         "index": index,
@@ -338,30 +383,33 @@ def fit_koopman(
     maximum_training_snapshots: int, seed: int,
     factorization_rel_threshold: float = 1e-5,
 ) -> tuple[KoopmanSpectrumKDMD, np.ndarray, int, tuple[float, float]]:
-    """Fit one joint Gaussian-kernel KDMD operator at the requested lag."""
+    """Fit one joint Gaussian-kernel KDMD operator at the requested lag.
+
+    The state is ``fields["state"]``; its blocks come from
+    ``fields["state_blocks"]`` (see ``combined_state``) or default to the
+    zonal Ts and ocean rows. Each block is scaled by its median pairwise
+    distance.
+    """
     state = fields["state"]
     indices = kdmd_training_indices(
         state.shape[0], lag, maximum_training_snapshots, seed,
     )
     origin, target = state[indices], state[indices + lag]
-    surface_count = fields["surface_anomaly"].shape[1]
-    surface_weights = fields["surface_weights"]
-    ocean_weights = fields["ocean_weights"]
-    surface_bandwidth = float(np.median(pdist(
-        origin[:, :surface_count] * np.sqrt(surface_weights),
-    )))
-    ocean_bandwidth = float(np.median(pdist(
-        origin[:, surface_count:] * np.sqrt(ocean_weights),
-    )))
-    if min(surface_bandwidth, ocean_bandwidth) <= 0:
-        raise ValueError("A kernel block has zero median pairwise distance")
-    kernel = WeightedGaussianKernel(
-        sigma=1.0,
-        weights=np.r_[
-            surface_weights / surface_bandwidth**2,
-            ocean_weights / ocean_bandwidth**2,
-        ],
-    )
+    layout = fields.get("state_blocks")
+    if layout is None:
+        surface_count = fields["surface_anomaly"].shape[1]
+        layout = [
+            ("surface", 0, surface_count, fields["surface_weights"], None),
+            ("ocean", surface_count, state.shape[1], fields["ocean_weights"], None),
+        ]
+    bandwidths, kernel_weights = [], []
+    for _, begin, end, weights, _ in layout:
+        bandwidth = float(np.median(pdist(origin[:, begin:end] * np.sqrt(weights))))
+        if bandwidth <= 0:
+            raise ValueError("A kernel block has zero median pairwise distance")
+        bandwidths.append(bandwidth)
+        kernel_weights.append(weights / bandwidth**2)
+    kernel = WeightedGaussianKernel(sigma=1.0, weights=np.concatenate(kernel_weights))
     kdmd = KernelDMD(kernel=kernel)
     kdmd.fit_snapshots(X=origin, Y=target)
     factorization = TSVDRegularizer()
@@ -375,7 +423,7 @@ def fit_koopman(
         U_r=basis, S_r=singular_values,
     )
     rates = spectrum.continuous_time_eigenvalues(lag)
-    return spectrum, rates, singular_values.size, (surface_bandwidth, ocean_bandwidth)
+    return spectrum, rates, singular_values.size, tuple(bandwidths)
 
 
 def leading_eigenfunction(
@@ -458,6 +506,211 @@ def phase_composite(values: np.ndarray, phase: np.ndarray, bins: int = 36):
     return centres, mean, spread
 
 
+def composite_fourier(composite: np.ndarray, centres: np.ndarray, harmonic: int):
+    """Return B_l = <C(phi) exp(-i l phi)> over the phase bins (axis 0)."""
+    weights = np.exp(-1j * harmonic * centres)
+    composite = np.asarray(composite)
+    return np.mean(composite * weights.reshape((-1,) + (1,) * (composite.ndim - 1)), axis=0)
+
+
+def observable_modes(
+    spectrum: KoopmanSpectrumKDMD,
+    state: np.ndarray,
+    observables: np.ndarray,
+    indices: np.ndarray,
+    mode_indices: list[int],
+    mode_scales: np.ndarray | None = None,
+) -> np.ndarray:
+    """Return direct KDMD modes of observables for the selected eigenfunctions.
+
+    This is ``spectrum.koopman_modes`` for every column at once,
+    ``a = W^* S_r^{-1/2} U_r^* G``, with ``G`` sampled at the KDMD training
+    states ``state[indices]``. ``observables`` has one row per year and any
+    trailing shape. Dividing by ``mode_scales`` makes each mode multiply the
+    normalized eigenfunction, so the observable part is ``2 Re(a psi)``.
+    """
+    if not np.allclose(
+        spectrum.reference_data, state[indices], rtol=1e-12, atol=1e-12,
+    ):
+        raise ValueError("KDMD reference states do not match the training indices")
+    values = np.asarray(observables)
+    training = values.reshape(values.shape[0], -1)[indices]
+    projection = spectrum.U_r.conj().T @ training / np.sqrt(spectrum.S_r)[:, None]
+    modes = spectrum.left_eigvecs[:, mode_indices].conj().T @ projection
+    if mode_scales is not None:
+        modes = modes / np.asarray(mode_scales)[:, None]
+    return modes.reshape((len(mode_indices),) + values.shape[1:])
+
+
+def regression_modes(
+    leading_psi: np.ndarray, harmonic_psi: np.ndarray, observables: np.ndarray,
+) -> np.ndarray:
+    """Fit observables on [1, psi1, psi2, conj(psi1), conj(psi2)] by least squares.
+
+    Returns the psi1 and psi2 coefficients, shape ``(2, ...)``. Fitting both
+    eigenfunctions and their conjugates jointly avoids leakage between them.
+    """
+    values = np.asarray(observables)
+    design = np.column_stack((
+        np.ones(leading_psi.size), leading_psi, harmonic_psi,
+        np.conj(leading_psi), np.conj(harmonic_psi),
+    ))
+    coefficients = np.linalg.lstsq(
+        design, values.reshape(values.shape[0], -1), rcond=None,
+    )[0][1:3]
+    return coefficients.reshape((2,) + values.shape[1:])
+
+
+def time_to_peak(modes: np.ndarray, omega: float) -> np.ndarray:
+    """Years after phase zero at which 2 Re(a psi) peaks, wrapped to [-P/2, P/2)."""
+    period = 2 * np.pi / omega
+    return np.mod(-np.angle(modes) / omega + period / 2, period) - period / 2
+
+
+def pattern_correlation(first: np.ndarray, second: np.ndarray, weights: np.ndarray) -> float:
+    """Weighted complex pattern correlation |<a, b>| / (|a| |b|)."""
+    numerator = abs(np.sum(weights * first * np.conj(second)))
+    return float(numerator / np.sqrt(
+        np.sum(weights * np.abs(first)**2) * np.sum(weights * np.abs(second)**2)
+    ))
+
+
+def state_mode_comparison(
+    spectrum: KoopmanSpectrumKDMD,
+    fields: dict[str, np.ndarray],
+    rates: np.ndarray,
+    leading_index: int,
+    leading_psi: np.ndarray,
+    harmonic_index: int,
+    harmonic_psi: np.ndarray,
+    mode_scales: np.ndarray,
+    *, lag: int, maximum_training_snapshots: int, seed: int,
+) -> dict:
+    """Compare three mode estimates for the zonal Ts and ocean state rows.
+
+    ``direct`` are KDMD modes, ``regression`` the joint least-squares fit on
+    both eigenfunctions, and ``composite`` the first Fourier coefficient of the
+    phase composite divided by mean |psi1|, which estimates a1 without a linear
+    model. Ocean values are in mK.
+    """
+    indices = kdmd_training_indices(
+        fields["state"].shape[0], lag, maximum_training_snapshots, seed,
+    )
+    omega = float(rates[leading_index].imag)
+    phase = np.mod(np.angle(leading_psi), 2 * np.pi)
+    mean_amplitude = float(np.mean(np.abs(leading_psi)))
+    blocks = {}
+    for name, values, lat, weights, scale in (
+        ("surface", fields["surface_anomaly"], fields["surface_lat"],
+         fields["surface_weights"], 1.0),
+        ("ocean", fields["ocean_anomaly"], fields["ocean_lat"],
+         fields["ocean_weights"], 1e3),
+    ):
+        direct = scale * observable_modes(
+            spectrum, fields["state"], values, indices,
+            [leading_index, harmonic_index], mode_scales,
+        )
+        regression = scale * regression_modes(leading_psi, harmonic_psi, values)
+        centres, composite, _ = phase_composite(scale * values, phase)
+        composite_mode = composite_fourier(composite, centres, 1) / mean_amplitude
+        blocks[name] = {
+            "lat": lat, "weights": weights,
+            "direct": direct, "regression": regression, "composite": composite_mode,
+            "centres": centres, "observed": composite,
+            "correlation": pattern_correlation(direct[0], regression[0], weights),
+            "composite_correlation": pattern_correlation(
+                direct[0], composite_mode, weights,
+            ),
+        }
+    return {
+        "mu": fields["mu"], "omega": omega, "period": 2 * np.pi / omega,
+        "harmonic_omega": float(rates[harmonic_index].imag), **blocks,
+    }
+
+
+# Map observables outside the Koopman state: archive name, label, unit,
+# display scale, grid, and whether to remove a linear trend (the ocean rows of
+# the state are detrended, the surface rows are not).
+MAP_OBSERVABLES = (
+    ("surface_temperature", "Surface T", "K", 1.0, "t21", False),
+    ("sea_ice_concentration", "Sea-ice concentration", "%", 100.0, "t21", False),
+    ("theta_layer_0_100m", "θ 0–100 m", "mK", 1e3, "lsg", True),
+    ("theta_layer_150_300m", "θ 150–300 m", "mK", 1e3, "lsg", True),
+    ("theta_layer_300_600m", "θ 300–600 m", "mK", 1e3, "lsg", True),
+    # Barotropic streamfunction, native LSG sign (not the eigenfunctions ψ).
+    ("barotropic_streamfunction", "Ψ_BT", "Sv", 1.0, "lsg", True),
+)
+
+
+def load_map_fields(
+    root: Path, mu: str, years: np.ndarray,
+    names: tuple[str, ...] | None = None,
+) -> dict:
+    """Read annual lat-lon maps on the Koopman years as anomalies.
+
+    Each field has its time mean removed, and the ocean layers also a linear
+    trend, matching the state convention. Dry LSG cells are NaN in the archive;
+    they are stored as zero anomalies with ``wet`` False so that mode
+    projections stay finite.
+    """
+    selected = [item for item in MAP_OBSERVABLES if names is None or item[0] in names]
+    years = np.asarray(years, dtype=int)
+    with h5py.File(source_file(root, mu), "r") as source:
+        all_years = np.asarray(source["year"][:], dtype=int)
+        first = int(np.searchsorted(all_years, years[0]))
+        stop = first + years.size
+        if not np.array_equal(all_years[first:stop], years):
+            raise ValueError("Map years do not match the Koopman state years")
+        maps = {
+            "t21_lat": np.asarray(source["t21_lat"][:], dtype=float),
+            "t21_lon": np.asarray(source["t21_lon"][:], dtype=float),
+            "lsm": np.asarray(source["lsm"][:], dtype=float),
+            "lsg_lat": np.asarray(source["lat"][:], dtype=float),
+            "lsg_lon": np.asarray(source["lon"][:], dtype=float),
+            "fields": {},
+        }
+        with h5py.File(basin_mask_file(root, mu), "r") as basins:
+            maps["t21_basin"] = np.asarray(basins["t21_south_atlantic"][:], dtype=bool)
+            maps["lsg_basin"] = np.asarray(basins["lsg_scalar_south_atlantic"][:], dtype=bool)
+        centred_year = years.astype(float) - years.mean()
+        for name, label, unit, scale, grid, detrend in selected:
+            values = np.asarray(source[name][first:stop], dtype=float)
+            wet = np.isfinite(values).all(axis=0)
+            values = np.where(wet[None], values, 0.0)
+            values -= values.mean(axis=0)
+            if detrend:
+                slope = np.tensordot(centred_year, values, axes=1) / (centred_year @ centred_year)
+                values -= centred_year[:, None, None] * slope[None]
+            maps["fields"][name] = {
+                "label": label, "unit": unit, "scale": scale, "grid": grid,
+                "wet": wet, "anomaly": values.astype(np.float32),
+            }
+    return maps
+
+
+def map_modes(
+    spectrum: KoopmanSpectrumKDMD,
+    fields: dict[str, np.ndarray],
+    maps: dict,
+    leading_index: int,
+    harmonic_index: int,
+    mode_scales: np.ndarray,
+    *, lag: int, maximum_training_snapshots: int, seed: int,
+) -> dict[str, np.ndarray]:
+    """Return direct KDMD modes (2, lat, lon) of each map, in display units."""
+    indices = kdmd_training_indices(
+        fields["state"].shape[0], lag, maximum_training_snapshots, seed,
+    )
+    modes = {}
+    for name, field in maps["fields"].items():
+        mode = field["scale"] * observable_modes(
+            spectrum, fields["state"], field["anomaly"], indices,
+            [leading_index, harmonic_index], mode_scales,
+        )
+        modes[name] = np.where(field["wet"][None], mode, np.nan)
+    return modes
+
+
 def harmonic_contributions(
     spectrum: KoopmanSpectrumKDMD,
     fields: dict[str, np.ndarray],
@@ -472,26 +725,12 @@ def harmonic_contributions(
     indices = kdmd_training_indices(
         fields["state"].shape[0], lag, maximum_training_snapshots, seed,
     )
-    if not np.allclose(
-        spectrum.reference_data, fields["state"][indices], rtol=1e-12, atol=1e-12,
-    ):
-        raise ValueError("KDMD reference states do not match the training indices")
     observables = np.column_stack((fields["ice_anomaly"], fields["state"]))
-    mode_method = getattr(spectrum, "koopman_modes", None)
-    if callable(mode_method):
-        training = observables[indices]
-        modes = np.column_stack([
-            mode_method(training[:, column])[[leading_index, harmonic_index]]
-            for column in range(training.shape[1])
-        ]) / mode_scales[:, None]
-        mode_source = "direct KDMD modes"
-    else:
-        design = np.column_stack((
-            np.ones(leading_psi.size), leading_psi, harmonic_psi,
-            np.conj(leading_psi), np.conj(harmonic_psi),
-        ))
-        modes = np.linalg.lstsq(design, observables, rcond=None)[0][1:3]
-        mode_source = "joint regression on both eigenfunctions"
+    modes = observable_modes(
+        spectrum, fields["state"], observables, indices,
+        [leading_index, harmonic_index], mode_scales,
+    )
+    mode_source = "direct KDMD modes"
 
     n_surface = fields["surface_lat"].size
     v_ice = modes[:, 0]
@@ -531,7 +770,7 @@ def harmonic_contributions(
     ocean_composites = [phase_composite(part, phase)[1] for part in ocean_parts]
 
     def fourier(composite, harmonic):
-        return complex(np.mean(composite * np.exp(-1j * harmonic * centres)))
+        return complex(composite_fourier(composite, centres, harmonic))
 
     def summary(parts):
         b1, b2 = fourier(parts[0], 1), fourier(parts[1], 2)
@@ -656,7 +895,7 @@ def make_figure(
     # analysis. Local-slope resonance ratios require multiple lagged fits.
 
     spectrum_axis.scatter(rates.real / np.abs(rates.real[1]), rates.imag, s=6,
-                          c="0.55", alpha=0.6, linewidths=0)
+                          c="b", alpha=1, linewidths=0)
     # spectrum_axis.scatter([rates[index].real], [rates[index].imag],
     #                       c="black", s=35, zorder=3, label=r"$\psi_1$")
     # spectrum_axis.scatter([rates[index].real], [-rates[index].imag],
@@ -666,7 +905,7 @@ def make_figure(
     spectrum_axis.set(xlabel=r"Re $\lambda$ ",
                       ylabel=r"Im $\lambda$ (yr$^{-1}$)",
                       title=f"(a) Direct lag-{lag} KDMD spectrum")
-    spectrum_axis.set_xlim(left=-18)
+    spectrum_axis.set_xlim(left=-18,right=0.2)
     _handles, _labels = spectrum_axis.get_legend_handles_labels()
     if _handles:
         spectrum_axis.legend(frameon=False)
@@ -863,6 +1102,231 @@ def make_harmonic_contribution_figure(
     return figure
 
 
+def mode_cycle(modes: np.ndarray, phase: np.ndarray) -> np.ndarray:
+    """Return 2 Re(a1 e^{i phi}) + 2 Re(a2 e^{2 i phi}) for each phase.
+
+    This takes |psi1| = 1 and psi2 = psi1**2 on the phase clock, which matches
+    the unit-RMS normalization and the harmonic alignment of the fit.
+    """
+    waves = np.stack((np.exp(1j * phase), np.exp(2j * phase)))
+    flat = modes.reshape(modes.shape[0], -1)
+    cycle = 2 * np.real(waves.T @ flat)
+    return cycle.reshape((phase.size,) + modes.shape[1:])
+
+
+def make_state_mode_figure(comparison: dict) -> plt.Figure:
+    """Draw the zonal state rows over one cycle: two modes against the composite."""
+    figure, axes = plt.subplots(
+        2, 4, figsize=(12, 6.5), layout="constrained",
+        gridspec_kw={"width_ratios": (1, 1, 1, 0.05)},
+    )
+    phase_grid = np.linspace(0, 2 * np.pi, 145)
+    for row, (name, title, unit) in enumerate((
+        ("surface", "zonal surface T", "K"),
+        ("ocean", "zonal θ 0–700 m", "mK"),
+    )):
+        block = comparison[name]
+        panels = (
+            ("KDMD modes ψ₁ + ψ₂", phase_grid, mode_cycle(block["direct"], phase_grid)),
+            ("regression on ψ₁, ψ₂", phase_grid,
+             mode_cycle(block["regression"], phase_grid)),
+            ("observed phase composite", block["centres"], block["observed"]),
+        )
+        limit = float(np.nanpercentile(np.abs(panels[2][2]), 99))
+        for column, (label, phase, values) in enumerate(panels):
+            axis = axes[row, column]
+            mesh = axis.pcolormesh(
+                phase, block["lat"], values.T, cmap="RdBu_r",
+                vmin=-limit, vmax=limit, shading="nearest", rasterized=True,
+            )
+            axis.set(xlim=(0, 2 * np.pi), ylim=(-45, 0), title=f"{label}: {title}")
+            axis.set_xticks(
+                np.linspace(0, 2 * np.pi, 5),
+                ["0", r"$\pi/2$", r"$\pi$", r"$3\pi/2$", r"$2\pi$"],
+            )
+            if column == 0:
+                axis.set_ylabel("Latitude (°)")
+            else:
+                axis.tick_params(labelleft=False)
+            if row == 1:
+                axis.set_xlabel(r"phase arg $\psi_1$ (0 = SA ice maximum)")
+        figure.colorbar(mesh, cax=axes[row, 3], label=unit)
+        axes[row, 0].text(
+            0.02, 0.03,
+            f"corr(KDMD, regression) = {block['correlation']:.3f}\n"
+            f"corr(KDMD, composite) = {block['composite_correlation']:.3f}",
+            transform=axes[row, 0].transAxes, fontsize="small",
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.8},
+        )
+    figure.suptitle(
+        f"μ={comparison['mu'].replace('p', '.')}: zonal state over one cycle "
+        f"(period {comparison['period']:.1f} yr)"
+    )
+    return figure
+
+
+def _wrap_longitude(longitude: np.ndarray) -> np.ndarray:
+    return (np.asarray(longitude) + 180.0) % 360.0 - 180.0
+
+
+def _lsg_to_regular(values: np.ndarray, lsg_lon: np.ndarray) -> np.ndarray:
+    """Spread staggered 5° LSG cells over a regular 2.5° longitude grid.
+
+    LSG rows alternate between 0° and 2.5° offsets, so every cell covers
+    exactly two 2.5° columns; the result can be drawn with one pcolormesh.
+    """
+    regular = np.full(values.shape[:-1] + (144,), np.nan)
+    first = np.floor((_wrap_longitude(lsg_lon) - 2.5 + 180.0) / 2.5 + 0.5).astype(int) % 144
+    rows = np.arange(values.shape[-2])[:, None]
+    regular[..., rows, first] = values
+    regular[..., rows, (first + 1) % 144] = values
+    return regular
+
+
+def phase_window_composite(
+    values: np.ndarray, phase: np.ndarray, centres: np.ndarray,
+    half_width: float = np.pi / 18,
+) -> np.ndarray:
+    """Average values over the years whose phase lies within half_width of each centre."""
+    composites = []
+    for centre in centres:
+        selected = np.abs(np.angle(np.exp(1j * (phase - centre)))) <= half_width
+        if not selected.any():
+            raise ValueError("A phase window contains no years")
+        composites.append(values[selected].mean(axis=0))
+    return np.asarray(composites)
+
+
+def make_map_mode_figure(
+    maps: dict, modes: dict[str, np.ndarray], *, period: float,
+    leading_psi: np.ndarray | None = None,
+    phase_count: int = 4, lat_range: tuple[float, float] = (-75.0, 5.0),
+    lon_range: tuple[float, float] = (-70.0, 25.0), basin_only: bool = True,
+    mu: str = "",
+) -> plt.Figure:
+    """Draw each map's two-mode cycle at equally spaced phases of psi1.
+
+    Columns are phases (0 = SA ice maximum). With ``leading_psi``, each
+    observable gets a second row: the observed composite of the anomaly over
+    years within ±10° of that phase, on the same colour scale, and the row
+    label gives the pattern correlation between the two rows. With
+    ``basin_only``, cells outside the South Atlantic basin masks are hidden.
+    """
+    phases = np.arange(phase_count) * 2 * np.pi / phase_count
+    names = list(modes)
+    kinds = ("KDMD ψ₁+ψ₂", "composite") if leading_psi is not None else ("KDMD ψ₁+ψ₂",)
+    psi_phase = None if leading_psi is None else np.angle(leading_psi)
+    aspect = (lat_range[1] - lat_range[0]) / (lon_range[1] - lon_range[0])
+    row_height = min(3.3, max(1.2, 3.3 * aspect))
+    figure, axes = plt.subplots(
+        len(names) * len(kinds), phase_count + 1,
+        figsize=(3.3 * phase_count + 0.6, len(names) * len(kinds) * row_height + 0.8),
+        layout="constrained",
+        gridspec_kw={"width_ratios": (1,) * phase_count + (0.04,)},
+        squeeze=False,
+    )
+    t21_lon = _wrap_longitude(maps["t21_lon"])
+    order = np.argsort(t21_lon)
+    t21_lon = t21_lon[order]
+    t21_lat = maps["t21_lat"]
+    lon_edges = np.r_[t21_lon - 2.8125, t21_lon[-1] + 2.8125]
+    lat_edges = np.r_[
+        t21_lat[0] - (t21_lat[1] - t21_lat[0]) / 2,
+        (t21_lat[1:] + t21_lat[:-1]) / 2,
+        t21_lat[-1] + (t21_lat[-1] - t21_lat[-2]) / 2,
+    ]
+    lsm = maps["lsm"][:, order]
+    lsg_lat = maps["lsg_lat"][:, 0]
+    lsg_lat_edges = np.r_[lsg_lat + 1.25, lsg_lat[-1] - 1.25]
+    regular_lon_edges = np.arange(-180.0, 180.01, 2.5)
+    regular_lon = regular_lon_edges[:-1] + 1.25
+    colormap = plt.get_cmap("RdBu_r").copy()
+    colormap.set_bad("0.88")
+
+    def to_display(values, grid):
+        # Put a (..., lat, lon) field on the plotted grid, hiding cells
+        # outside the basin when requested.
+        if grid == "t21":
+            if basin_only:
+                values = np.where(maps["t21_basin"], values, np.nan)
+            return values[..., order]
+        if basin_only:
+            values = np.where(maps["lsg_basin"], values, np.nan)
+        return _lsg_to_regular(values, maps["lsg_lon"])
+
+    for field_index, name in enumerate(names):
+        field = maps["fields"][name]
+        grid = field["grid"]
+        rows = {"KDMD ψ₁+ψ₂": to_display(mode_cycle(modes[name], phases), grid)}
+        if psi_phase is not None:
+            observed = field["scale"] * phase_window_composite(
+                field["anomaly"], psi_phase, phases,
+            )
+            observed = np.where(field["wet"][None], observed, np.nan)
+            rows["composite"] = to_display(observed, grid)
+        lat_axis = t21_lat if grid == "t21" else lsg_lat
+        lon_axis = t21_lon if grid == "t21" else regular_lon
+        window = np.ix_(
+            (lat_axis >= lat_range[0]) & (lat_axis <= lat_range[1]),
+            (lon_axis >= lon_range[0]) & (lon_axis <= lon_range[1]),
+        )
+        shown = np.concatenate([values[:, window[0], window[1]].ravel() for values in rows.values()])
+        shown = shown[np.isfinite(shown)]
+        limit = float(np.percentile(np.abs(shown), 99.5)) if shown.size else 1.0
+        limit = limit or 1.0
+        correlation = ""
+        if psi_phase is not None:
+            first = rows["KDMD ψ₁+ψ₂"][:, window[0], window[1]].ravel()
+            second = rows["composite"][:, window[0], window[1]].ravel()
+            valid = np.isfinite(first) & np.isfinite(second)
+            if valid.any():
+                value = np.sum(first[valid] * second[valid]) / np.sqrt(
+                    np.sum(first[valid]**2) * np.sum(second[valid]**2)
+                )
+                correlation = f"\nr = {value:.2f}"
+        for kind_index, kind in enumerate(kinds):
+            row = field_index * len(kinds) + kind_index
+            for column, phase in enumerate(phases):
+                axis = axes[row, column]
+                values = np.ma.masked_invalid(rows[kind][column])
+                if grid == "t21":
+                    mesh = axis.pcolormesh(
+                        lon_edges, lat_edges, values, cmap=colormap,
+                        vmin=-limit, vmax=limit, rasterized=True,
+                    )
+                else:
+                    mesh = axis.pcolormesh(
+                        regular_lon_edges, lsg_lat_edges, values, cmap=colormap,
+                        vmin=-limit, vmax=limit, rasterized=True,
+                    )
+                axis.contour(t21_lon, t21_lat, lsm, levels=[0.5], colors="0.3", linewidths=0.5)
+                axis.set(xlim=lon_range, ylim=lat_range)
+                axis.tick_params(labelsize="small")
+                if column:
+                    axis.tick_params(labelleft=False)
+                else:
+                    axis.set_ylabel(
+                        f"{field['label']}\n{kind}"
+                        + (correlation if kind_index == len(kinds) - 1 else ""),
+                        fontsize="small",
+                    )
+                if row < axes.shape[0] - 1:
+                    axis.tick_params(labelbottom=False)
+                if row == 0:
+                    axis.set_title(
+                        f"phase {phase / (2 * np.pi):.2f} cycle "
+                        f"(+{phase / (2 * np.pi) * period:.1f} yr)",
+                        fontsize="small",
+                    )
+            figure.colorbar(mesh, cax=axes[row, -1], label=field["unit"])
+    figure.suptitle(
+        f"μ={mu.replace('p', '.')}: lat–lon modes over one cycle "
+        f"(period {period:.1f} yr; phase 0 = SA ice maximum"
+        + ("; composites over ±10° of phase)" if psi_phase is not None else ")")
+    )
+    return figure
+
+
 def make_selected_eigenmode_figure(
     fields: dict[str, np.ndarray], selected_mode: dict,
 ) -> plt.Figure:
@@ -944,8 +1408,9 @@ def make_indexed_spectrum_figure(
 def main() -> None:
     """Fit one Koopman operator and save its figure and leading eigenfunction."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mu", default=MU, choices=available_mu_values(),
-                        help="PlaSim μ with raw maps and basin masks")
+    parser.add_argument("--root", default="repo", choices=sorted(RAW_MAP_ROOTS),
+                        help="Archive root holding the raw maps and basin masks")
+    parser.add_argument("--mu", default=MU, help="PlaSim μ with raw maps and basin masks")
     parser.add_argument("--lag", type=int, default=5, help="KDMD snapshot lag in years")
     parser.add_argument("--start-year", type=int, default=6500)
     parser.add_argument("--maximum-depth", type=float, default=700.0)
@@ -958,7 +1423,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.lag <= 0 or args.tsvd <= 0 or args.factorization_tsvd <= 0:
         parser.error("--lag and both TSVD thresholds must be positive")
-    fields = load_fields(args.start_year, args.maximum_depth, args.mu)
+    root = RAW_MAP_ROOTS[args.root]
+    if args.mu not in available_mu_values(root):
+        parser.error(f"No mu={args.mu} raw maps and basin masks under {root}")
+    fields = load_fields(root, args.start_year, args.maximum_depth, args.mu)
     spectrum, rates, rank, bandwidths = fit_koopman(
         fields, args.lag, args.tsvd, args.maximum_training_snapshots, args.seed,
         args.factorization_tsvd,
@@ -977,7 +1445,8 @@ def main() -> None:
         tsvd=args.tsvd, factorization_tsvd=args.factorization_tsvd,
         rank=rank, surface_bandwidth=bandwidths[0],
         ocean_bandwidth=bandwidths[1], ice_anomaly=fields["ice_anomaly"],
-        source_archive=str(source_file(args.mu)), source_masks=str(basin_mask_file(args.mu)),
+        source_archive=str(source_file(root, args.mu)),
+        source_masks=str(basin_mask_file(root, args.mu)),
         ice_area_definition="South Atlantic T21 SIC integrated over basin ocean area",
     )
     print(f"Saved {stem}.png, .pdf, and .npz")

@@ -32,6 +32,7 @@ def _(mo):
 
 @app.cell
 def _():
+    from gsebm.plasim_raw_maps import RAW_MAP_ROOTS
     from gsebm.plasim_koopman_single import (
         available_mu_values,
         extract_eigenmode,
@@ -40,36 +41,54 @@ def _():
         leading_and_harmonic_eigenfunctions,
         leading_eigenfunction,
         load_fields,
+        load_map_fields,
+        map_modes,
+        state_mode_comparison,
     )
 
     return (
+        RAW_MAP_ROOTS,
         available_mu_values,
-        extract_eigenmode,
         fit_koopman,
         harmonic_contributions,
         leading_and_harmonic_eigenfunctions,
         leading_eigenfunction,
         load_fields,
+        load_map_fields,
+        map_modes,
+        state_mode_comparison,
     )
 
 
 @app.cell
-def _(available_mu_values, mo):
-    _values = available_mu_values()
-    if not _values:
-        raise FileNotFoundError("No PlaSim raw-map archive with basin masks was found")
+def _(RAW_MAP_ROOTS, mo):
+    selected_root = mo.ui.dropdown(
+        options=RAW_MAP_ROOTS, value="repo", label="Archive root",
+    )
+    selected_root
+    return (selected_root,)
+
+
+@app.cell
+def _(available_mu_values, mo, selected_root):
+    archive_root = selected_root.value
+    _values = available_mu_values(archive_root)
+    mo.stop(
+        not _values,
+        mo.md(f"No raw-map archive with basin masks in `{archive_root}`."),
+    )
     selected_mu = mo.ui.dropdown(
         options=_values, value="1240" if "1240" in _values else _values[0],
         label="PlaSim μ",
     )
-    selected_mu
-    return (selected_mu,)
+    mo.vstack([mo.md(f"**Archive root:** `{archive_root}`"), selected_mu])
+    return archive_root, selected_mu
 
 
 @app.cell
 def _(selected_mu):
     analysis_mu = selected_mu.value
-    stationary_start_year = 10_000#7000
+    stationary_start_year = 8000#10_000#7000
     maximum_ocean_depth_m = 700.0
     snapshot_lag_years = 5
     factorization_rel_threshold = 1e-5
@@ -89,8 +108,16 @@ def _(selected_mu):
 
 
 @app.cell
-def _(analysis_mu, load_fields, maximum_ocean_depth_m, stationary_start_year):
-    fields = load_fields(stationary_start_year, maximum_ocean_depth_m, analysis_mu)
+def _(
+    analysis_mu,
+    archive_root,
+    load_fields,
+    maximum_ocean_depth_m,
+    stationary_start_year,
+):
+    fields = load_fields(
+        archive_root, stationary_start_year, maximum_ocean_depth_m, analysis_mu
+    )
     return (fields,)
 
 
@@ -434,106 +461,296 @@ def _(
 
 
 @app.cell
-def _(
-    figure_module,
-    koopman_eigenvalues_per_year,
-    leading_complex_mode_index,
-    second_harmonic_index,
-):
-    indexed_spectrum = figure_module.make_indexed_spectrum_figure(
-        koopman_eigenvalues_per_year,
-        leading_complex_mode_index,
-        second_harmonic_index,
-    )
-    indexed_spectrum
+def _():
     return
 
 
 @app.cell
-def _(koopman_eigenvalues_per_year, mo):
-    _options = {
-        f"{_index}: {_rate.real:+.5f}{_rate.imag:+.5f}i yr⁻¹"
-        + (" (real)" if abs(_rate.imag) < 1e-10 else ""): _index
-        for _index, _rate in enumerate(koopman_eigenvalues_per_year)
-    }
-    chosen_mode = mo.ui.dropdown(
-        options=_options, allow_select_none=True,
-        searchable=True, label="Inspect KDMD eigenmode (zero-based index)",
-    )
-    chosen_mode
-    return (chosen_mode,)
+def _():
+    return
 
 
 @app.cell
-def _(
-    chosen_mode,
-    extract_eigenmode,
-    fields,
-    koopman_eigenvalues_per_year,
-    koopman_spectrum,
-    maximum_training_snapshots,
-    snapshot_lag_years,
-    training_seed,
-):
-    selected_mode = None
-    selected_eigenvalue = None
-    selected_eigenfunction = None
-    selected_ice_mode = None
-    selected_surface_mode = None
-    selected_ocean_mode = None
-    if chosen_mode.value is not None:
-        selected_mode = extract_eigenmode(
-            koopman_spectrum, koopman_eigenvalues_per_year, fields,
-            chosen_mode.value, lag=snapshot_lag_years,
-            maximum_training_snapshots=maximum_training_snapshots,
-            seed=training_seed,
-        )
-        selected_eigenvalue = selected_mode["eigenvalue"]
-        selected_eigenfunction = selected_mode["eigenfunction"]
-        selected_ice_mode = selected_mode["ice_mode"]
-        selected_surface_mode = selected_mode["surface_mode"]
-        selected_ocean_mode = selected_mode["ocean_mode"]
-    return (
-        selected_eigenfunction,
-        selected_eigenvalue,
-        selected_ice_mode,
-        selected_mode,
-        selected_ocean_mode,
-        selected_surface_mode,
-    )
+def _():
+    return
+
+
+@app.cell
+def _():
+    return
+
+
+@app.cell
+def _():
+    return
 
 
 @app.cell(hide_code=True)
-def _(mo, selected_mode):
-    if selected_mode is None:
-        _output = mo.md("Choose an index above to inspect its eigenfunction and modes.")
+def _(mo):
+    mo.md(r"""
+    ## Modes of the state variables
+
+    For an observable $G$, the Koopman expansion is
+    $G \approx \bar G + 2\,\mathrm{Re}(a_1\psi_1) + 2\,\mathrm{Re}(a_2\psi_2) + \dots$.
+    Each zonal row has a complex mode $a_1$: the amplitude is $2|a_1|$ and the
+    peak time is $-\arg(a_1)/\omega$ years after the SA ice maximum. Three estimates:
+
+    - **KDMD mode**: left-eigenvector projection of $G$ at the training states
+      (the operator's own mode; one matrix product for all rows).
+    - **Regression**: least squares of $G$ on $[1, \psi_1, \psi_2, \bar\psi_1, \bar\psi_2]$ over all years.
+    - **Phase composite**: first Fourier coefficient of the composite of $G$ on
+      $\arg\psi_1$, divided by $\langle|\psi_1|\rangle$. No linear model.
+
+    The same functions apply to observables outside the state, such as maps.
+    """)
+    return
+
+
+@app.cell
+def _(
+    complex_eigenfunction,
+    fields,
+    koopman_eigenvalues_per_year,
+    koopman_spectrum,
+    leading_complex_mode_index,
+    maximum_training_snapshots,
+    mode_scales,
+    second_harmonic_eigenfunction,
+    second_harmonic_index,
+    snapshot_lag_years,
+    state_mode_comparison,
+    training_seed,
+):
+    state_modes = None
+    if second_harmonic_index is not None:
+        state_modes = state_mode_comparison(
+            koopman_spectrum,
+            fields,
+            koopman_eigenvalues_per_year,
+            leading_complex_mode_index,
+            complex_eigenfunction,
+            second_harmonic_index,
+            second_harmonic_eigenfunction,
+            mode_scales,
+            lag=snapshot_lag_years,
+            maximum_training_snapshots=maximum_training_snapshots,
+            seed=training_seed,
+        )
+    return (state_modes,)
+
+
+@app.cell
+def _(figure_module, mo, state_modes):
+    if state_modes is None:
+        _output = mo.md("The state-mode comparison needs a stable mode near $2\\omega$.")
     else:
-        _eigenvalue = selected_mode["eigenvalue"]
-        _kind = "real" if selected_mode["is_real_mode"] else "complex"
-        _ice_mode = selected_mode["ice_mode"]
-        _output = mo.md(
-            f"**Selected {_kind} mode {selected_mode['index']}** · "
-            f"λ={_eigenvalue.real:+.5f}{_eigenvalue.imag:+.5f}i yr⁻¹ · "
-            f"South Atlantic ice mode={_ice_mode.real:+.4g}{_ice_mode.imag:+.4g}i "
-            "(10⁶ km²).  \n"
-            "The eigenfunction has unit RMS; its mode coefficients use the inverse "
-            "scaling. The arrays are available as `selected_eigenfunction`, "
-            "`selected_surface_mode`, `selected_ocean_mode`, and `selected_ice_mode`. "
-            "For a complex conjugate pair, use $2\\operatorname{Re}(v\\psi)$; "
-            "for a real mode, use $\\operatorname{Re}(v\\psi)$."
+        _output = figure_module.make_state_mode_figure(state_modes)
+    _output
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Modes of lat–lon maps
+
+    The same KDMD projection applied to observables outside the state:
+    T21 surface temperature and sea-ice concentration, the LSG
+    θ layer maps, and the barotropic streamfunction $\Psi_{BT}$ (Sv, native
+    LSG sign; not to be confused with the eigenfunctions $\psi_k$). Each map is read on the Koopman years as an anomaly (ocean
+    layers also detrended, as in the state). Panels show
+    $2\,\mathrm{Re}(a_1 e^{i\phi}) + 2\,\mathrm{Re}(a_2 e^{2i\phi})$ at
+    equally spaced phases $\phi$ of $\psi_1$.
+    """)
+    return
+
+
+@app.cell
+def _(analysis_mu, archive_root, fields, load_map_fields):
+    map_fields = load_map_fields(archive_root, analysis_mu, fields["years"])
+    return (map_fields,)
+
+
+@app.cell
+def _(
+    fields,
+    koopman_spectrum,
+    leading_complex_mode_index,
+    map_fields,
+    map_modes,
+    maximum_training_snapshots,
+    mode_scales,
+    second_harmonic_index,
+    snapshot_lag_years,
+    training_seed,
+):
+    map_mode_maps = None
+    if second_harmonic_index is not None:
+        map_mode_maps = map_modes(
+            koopman_spectrum,
+            fields,
+            map_fields,
+            leading_complex_mode_index,
+            second_harmonic_index,
+            mode_scales,
+            lag=snapshot_lag_years,
+            maximum_training_snapshots=maximum_training_snapshots,
+            seed=training_seed,
+        )
+    return (map_mode_maps,)
+
+
+@app.cell
+def _(mo):
+    map_phase_count = mo.ui.slider(
+        start=2, stop=8, step=1, value=4, show_value=True,
+        label="Phases per cycle",
+    )
+    map_lat_range = mo.ui.range_slider(
+        start=-90, stop=90, step=5, value=(-75, 5), show_value=True,
+        label="Latitude range",
+    )
+    map_lon_range = mo.ui.range_slider(
+        start=-180, stop=180, step=5, value=(-70, 25), show_value=True,
+        label="Longitude range",
+    )
+    map_basin_only = mo.ui.checkbox(value=True, label="South Atlantic basin only")
+    map_show_composite = mo.ui.checkbox(value=True, label="Show observed composites")
+    mo.vstack([
+        mo.hstack([map_phase_count, map_basin_only, map_show_composite]),
+        mo.hstack([map_lat_range, map_lon_range]),
+    ])
+    return (
+        map_basin_only,
+        map_lat_range,
+        map_lon_range,
+        map_phase_count,
+        map_show_composite,
+    )
+
+
+@app.cell
+def _(
+    analysis_mu,
+    complex_eigenfunction,
+    figure_module,
+    koopman_eigenvalues_per_year,
+    leading_complex_mode_index,
+    map_basin_only,
+    map_fields,
+    map_lat_range,
+    map_lon_range,
+    map_mode_maps,
+    map_phase_count,
+    map_show_composite,
+    mo,
+    np,
+):
+    if map_mode_maps is None:
+        _output = mo.md("The map modes need a stable mode near $2\\omega$.")
+    else:
+        _output = figure_module.make_map_mode_figure(
+            map_fields, map_mode_maps,
+            period=2 * np.pi / koopman_eigenvalues_per_year[leading_complex_mode_index].imag,
+            phase_count=map_phase_count.value,
+            lat_range=tuple(map_lat_range.value),
+            lon_range=tuple(map_lon_range.value),
+            leading_psi=complex_eigenfunction if map_show_composite.value else None,
+            basin_only=map_basin_only.value,
+            mu=analysis_mu,
         )
     _output
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Old Code that we don't want now
+    """)
+    return
+
+
 @app.cell
-def _(fields, figure_module, selected_mode):
-    _output = None
-    if selected_mode is not None:
-        _output = figure_module.make_selected_eigenmode_figure(
-            fields, selected_mode,
-        )
-    _output
+def _():
+    # indexed_spectrum = figure_module.make_indexed_spectrum_figure(
+    #     koopman_eigenvalues_per_year,
+    #     leading_complex_mode_index,
+    #     second_harmonic_index,
+    # )
+    # indexed_spectrum
+    return
+
+
+@app.cell
+def _():
+    # _options = {
+    #     f"{_index}: {_rate.real:+.5f}{_rate.imag:+.5f}i yr⁻¹"
+    #     + (" (real)" if abs(_rate.imag) < 1e-10 else ""): _index
+    #     for _index, _rate in enumerate(koopman_eigenvalues_per_year)
+    # }
+    # chosen_mode = mo.ui.dropdown(
+    #     options=_options, allow_select_none=True,
+    #     searchable=True, label="Inspect KDMD eigenmode (zero-based index)",
+    # )
+    # chosen_mode
+    return
+
+
+@app.cell
+def _():
+    # selected_mode = None
+    # selected_eigenvalue = None
+    # selected_eigenfunction = None
+    # selected_ice_mode = None
+    # selected_surface_mode = None
+    # selected_ocean_mode = None
+    # if chosen_mode.value is not None:
+    #     selected_mode = extract_eigenmode(
+    #         koopman_spectrum, koopman_eigenvalues_per_year, fields,
+    #         chosen_mode.value, lag=snapshot_lag_years,
+    #         maximum_training_snapshots=maximum_training_snapshots,
+    #         seed=training_seed,
+    #     )
+    #     selected_eigenvalue = selected_mode["eigenvalue"]
+    #     selected_eigenfunction = selected_mode["eigenfunction"]
+    #     selected_ice_mode = selected_mode["ice_mode"]
+    #     selected_surface_mode = selected_mode["surface_mode"]
+    #     selected_ocean_mode = selected_mode["ocean_mode"]
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    # if selected_mode is None:
+    #     _output = mo.md("Choose an index above to inspect its eigenfunction and modes.")
+    # else:
+    #     _eigenvalue = selected_mode["eigenvalue"]
+    #     _kind = "real" if selected_mode["is_real_mode"] else "complex"
+    #     _ice_mode = selected_mode["ice_mode"]
+    #     _output = mo.md(
+    #         f"**Selected {_kind} mode {selected_mode['index']}** · "
+    #         f"λ={_eigenvalue.real:+.5f}{_eigenvalue.imag:+.5f}i yr⁻¹ · "
+    #         f"South Atlantic ice mode={_ice_mode.real:+.4g}{_ice_mode.imag:+.4g}i "
+    #         "(10⁶ km²).  \n"
+    #         "The eigenfunction has unit RMS; its mode coefficients use the inverse "
+    #         "scaling. The arrays are available as `selected_eigenfunction`, "
+    #         "`selected_surface_mode`, `selected_ocean_mode`, and `selected_ice_mode`. "
+    #         "For a complex conjugate pair, use $2\\operatorname{Re}(v\\psi)$; "
+    #         "for a real mode, use $\\operatorname{Re}(v\\psi)$."
+    #     )
+    # _output
+    return
+
+
+@app.cell
+def _():
+    # _output = None
+    # if selected_mode is not None:
+    #     _output = figure_module.make_selected_eigenmode_figure(
+    #         fields, selected_mode,
+    #     )
+    # _output
     return
 
 
