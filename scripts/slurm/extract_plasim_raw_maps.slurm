@@ -3,8 +3,8 @@
 # which supplies REPO, LIST, OUTPUT_ROOT and WORKERS, the array range, the
 # CPU count and the log paths.
 #SBATCH --job-name=plasim_extract
-#SBATCH --time=02:00:00
-#SBATCH --partition=devel
+#SBATCH --time=03:30:00
+#SBATCH --partition=short
 #SBATCH --account=complexp
 #SBATCH --qos=hpc
 #SBATCH --nodes=1

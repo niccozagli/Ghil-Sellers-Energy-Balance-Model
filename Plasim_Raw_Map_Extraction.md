@@ -105,8 +105,10 @@ MU_MIN=1230 MU_MAX=1245 scripts/slurm/submit_plasim_extraction.sh
 
 `EXPERIMENTS_ROOT` defaults to `/home/n/nz68/plasim-workspace/experiments` and
 `OUTPUT_ROOT` to `/scratch/complexp/nz68/plasim-workspace/extracted`.
+The extraction task requests the `short` partition (1-day limit), with a
+3.5-hour job time limit.
 `WORKERS` (default 4) sets the reader processes, and `MAX_PARALLEL` (default 4)
-sets how many tasks run at once. A task that reaches its 2-hour limit leaves a
+sets how many tasks run at once. A task that reaches its 3.5-hour limit leaves a
 committed partial archive; resubmitting the same selection continues it.
 
 Archives built from local copies of the source files cannot be extended on
