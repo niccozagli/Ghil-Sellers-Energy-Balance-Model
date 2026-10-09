@@ -2,10 +2,13 @@
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import importlib.util
+import json
 import unittest
 
 import numpy as np
 import xarray as xr
+from typer.testing import CliRunner
 
 from gsebm.plasim_raw_maps import (
     _make_basin_masks,
@@ -53,6 +56,27 @@ class PlaSimRawMapTest(unittest.TestCase):
                 np.testing.assert_array_equal(
                     result["t21_south_atlantic"], [[1, 0], [0, 0]]
                 )
+
+    def test_cli_writes_report_to_requested_path(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "extract_plasim_raw_maps",
+            Path(__file__).resolve().parents[1] / "scripts" / "extract_plasim_raw_maps.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with TemporaryDirectory() as temporary:
+            experiment = Path(temporary) / "CONTROL_360ppm_T21L10_10000Y_MU_1240"
+            experiment.mkdir()
+            report = Path(temporary) / "reports" / "mu1240.json"
+            result = CliRunner().invoke(module.app, [
+                "--experiment-dir", str(experiment),
+                "--output-root", str(Path(temporary) / "archives"),
+                "--report-path", str(report),
+            ])
+            self.assertEqual(result.exit_code, 0, result.output)
+            entries = json.loads(report.read_text())
+            self.assertEqual(entries[0]["action"], "skip_missing_source")
+            self.assertFalse((Path(temporary) / "archives" / "raw_map_extraction_inventory.json").exists())
 
 if __name__ == "__main__":
     unittest.main()

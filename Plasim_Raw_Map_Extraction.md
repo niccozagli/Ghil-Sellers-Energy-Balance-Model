@@ -79,3 +79,48 @@ notebook session. No other command or derived file is required.
 When `/Volumes/Nicco/Plasim/extracted` is mounted and contains archives, the
 notebook selects it by default; `PLASIM_RAW_MAP_ROOT` still overrides that
 choice. The selected archive root is shown above the μ selector.
+
+## Extraction on the cluster
+
+`scripts/slurm/submit_plasim_extraction.sh` submits one Slurm array task per
+μ experiment (`scripts/slurm/extract_plasim_raw_maps.slurm`). Each task runs
+the same extractor with `--experiment-dir`, so each archive is built,
+resumed, or appended on its own. Each task writes its report to
+`<output root>/logs/report_<experiment>.json` (`--report-path`) instead of the
+shared inventory file. One-time setup on a login node:
+
+```bash
+git clone --recurse-submodules <repository> && cd <repository>
+uv sync
+```
+
+Then, from the repository clone:
+
+```bash
+DRY_RUN=1 scripts/slurm/submit_plasim_extraction.sh        # list the tasks
+scripts/slurm/submit_plasim_extraction.sh                  # all CONTROL_*_MU_* runs
+ONLY="1232p5" scripts/slurm/submit_plasim_extraction.sh    # selected labels
+MU_MIN=1230 MU_MAX=1245 scripts/slurm/submit_plasim_extraction.sh
+```
+
+`EXPERIMENTS_ROOT` defaults to `/home/n/nz68/plasim-workspace/experiments` and
+`OUTPUT_ROOT` to `/scratch/complexp/nz68/plasim-workspace/extracted`.
+`WORKERS` (default 4) sets the reader processes, and `MAX_PARALLEL` (default 4)
+sets how many tasks run at once. A task that reaches its 2-hour limit leaves a
+committed partial archive; resubmitting the same selection continues it.
+
+Archives built from local copies of the source files cannot be extended on
+the cluster. The append check compares each source block's size and
+modification time with the files it reads, and copies have different
+modification times. Build archives once on the cluster from the original
+output. Later model years then append there. Copy finished archives to the
+local roots with, for example:
+
+```bash
+rsync -av --include='*/' --include='*_spinup_*.nc' --exclude='*' \
+  <user>@<cluster>:/scratch/complexp/nz68/plasim-workspace/extracted/ \
+  /Volumes/Nicco/Plasim/extracted/
+```
+
+Do not extend the copied archives locally: their source signatures belong to
+the cluster files.

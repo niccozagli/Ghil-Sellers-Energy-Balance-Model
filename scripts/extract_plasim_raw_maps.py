@@ -41,6 +41,9 @@ def main(
     dry_run: bool = typer.Option(False, "--dry-run", help="Print coverage and planned actions without writing outputs."),
     refresh: bool = typer.Option(False, "--refresh", help="Rebuild even when a current archive covers all source years."),
     workers: int = typer.Option(4, min=1, help="Number of parallel per-file readers."),
+    report_path: Path | None = typer.Option(
+        None, help="Inventory report file; defaults to <archive root>/raw_map_extraction_inventory.json."
+    ),
 ) -> None:
     """Build compressed raw map archives for new or extended spinup records."""
     if state != "spinup":
@@ -124,8 +127,8 @@ def main(
         report.append(entry)
         typer.echo(json.dumps(entry))
     if not dry_run:
-        root.mkdir(parents=True, exist_ok=True)
-        report_path = root / "raw_map_extraction_inventory.json"
+        report_path = report_path or root / "raw_map_extraction_inventory.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report, indent=2) + "\n")
         typer.echo(report_path)
     if any(entry["action"] == "failed" for entry in report if entry.get("source_files")):
