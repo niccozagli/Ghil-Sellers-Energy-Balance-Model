@@ -10,6 +10,7 @@ from gsebm.bvp import solve_temperature_bvp
 from gsebm.ivp import build_ivp_grid, build_ivp_operator, solve_temperature_ivp
 from gsebm.parameters import RunSettings, StochasticRunSettings
 from gsebm.sde import (
+    OscillatorForcing,
     build_noise_latitude_grid,
     build_spatial_noise_process,
     solve_temperature_sde,
@@ -244,6 +245,60 @@ class SDETest(unittest.TestCase):
         self.assertTrue(np.all(np.diff(mean_variance) >= -1e-12))
         self.assertGreater(linear_fit[0], 0.0)
         self.assertGreater(r_squared, 0.9)
+
+
+class OscillatorForcingTests(unittest.TestCase):
+    def _solve(self, oscillator, steps, x_grid=None):
+        return solve_temperature_sde(
+            settings=RunSettings(final_time=steps * DAY),
+            stochastic_settings=StochasticRunSettings(dt=DAY, noise_amplitude=1.0e-4, noise_seed=3),
+            initial_condition_kind="scalar",
+            initial_scalar_value=290.0,
+            x_grid=x_grid,
+            oscillator=oscillator,
+            oscillator_seed=4,
+        )
+
+    def test_zero_amplitude_reproduces_the_unforced_solution(self) -> None:
+        silent = OscillatorForcing(center_x=-0.7, width_x=0.08, period_seconds=20 * YEAR,
+                                   quality=5.0, q_std=0.0)
+
+        forced = self._solve(silent, 30)
+        unforced = self._solve(None, 30)
+
+        np.testing.assert_array_equal(forced.temperature, unforced.temperature)
+        self.assertIsNone(unforced.forcing)
+        np.testing.assert_array_equal(forced.forcing, 0.0)
+        self.assertEqual(forced.forcing.shape[1], 2)
+
+    def test_oscillator_has_the_requested_standard_deviation(self) -> None:
+        oscillator = OscillatorForcing(center_x=-0.7, width_x=0.08, period_seconds=40 * DAY,
+                                       quality=5.0, q_std=1.0e-7)
+        x_grid = np.linspace(-0.98, 0.98, 21)
+
+        solution = self._solve(oscillator, 40_000, x_grid)
+
+        self.assertAlmostEqual(solution.forcing[2000:, 0].std() / 1.0e-7, 1.0, delta=0.1)
+
+    def test_limit_cycle_period_follows_the_climate_and_slips_flip_the_phase(self) -> None:
+        from gsebm.sde import LimitCycleForcing
+
+        cycle = LimitCycleForcing(
+            center_x=-0.7, width_x=0.08, period_seconds=100 * DAY, reference_temperature=280.0,
+            frequency_sensitivity=0.05, amplitude_relaxation_seconds=10 * DAY, amplitude_std=0.0,
+            phase_diffusion=0.0, slip_rate=0.0, slip_size=np.pi, q_amplitude=1.0e-7)
+        rng = np.random.default_rng(0)
+        state = cycle.start()
+        for _ in range(100):
+            state = cycle.advance(state, 270.0, DAY, rng)
+
+        # one 100-day period at the reference temperature, slower when colder
+        self.assertAlmostEqual(state[1] / (2 * np.pi), np.exp(-0.5), places=10)
+        self.assertAlmostEqual(state[0], 1.0)
+
+        slipping = LimitCycleForcing(**{**cycle.__dict__, "slip_rate": 1.0 / DAY})
+        jumped = slipping.advance(np.array([1.0, 0.0]), 280.0, DAY, rng)
+        self.assertAlmostEqual(abs(jumped[1] - 2 * np.pi / 100), np.pi)
 
 
 if __name__ == "__main__":

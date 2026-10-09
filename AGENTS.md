@@ -200,6 +200,19 @@ Conventions:
 - Avoid broad refactors while changing numerical behavior; isolate formula,
   interpolation, and workflow changes so they can be reviewed independently.
 
+## Data Analysis with the User
+
+- Be candid about the analysis you plan to do before doing it: which data,
+  which quantities, how each one is computed (variables, masks, weights,
+  windows), and which method. Check with the user and wait for agreement
+  before running anything beyond a plain look at the data.
+- Look at the data itself first. Plot annual values; do not add smoothing,
+  running means, filtering, detrending, or fitted models unless the user asks.
+  When an agreed method needs such a step, say so where it is used.
+- State plainly what a result rests on. Keep findings that follow directly
+  from the data separate from interpretations and hypotheses, and say when an
+  earlier result no longer holds.
+
 ## Safety Notes for Agents
 
 - The git worktree may contain user changes. Inspect status before editing and

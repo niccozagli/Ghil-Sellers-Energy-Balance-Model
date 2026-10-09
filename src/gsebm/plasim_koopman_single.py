@@ -70,11 +70,13 @@ def basin_mask_file(root: Path, mu: str = MU) -> Path:
 
 def load_fields(
     root: Path, start_year: int, maximum_depth: float, mu: str = MU,
-    end_year: int | None = None,
+    end_year: int | None = None, detrend_ocean: bool = True,
 ) -> dict[str, np.ndarray]:
     """Build South Atlantic zonal temperature states from native annual maps.
 
     Years after ``start_year`` are used, through ``end_year`` when given.
+    Ocean rows are linearly detrended unless ``detrend_ocean`` is False; the
+    undetrended row temperatures are always returned as ``ocean_state``.
     """
     with xr.open_dataset(source_file(root, mu)) as dataset, xr.open_dataset(
         basin_mask_file(root, mu)
@@ -258,7 +260,7 @@ def load_fields(
     centred_year = years.astype(float) - years.mean()
     ocean_mean = ocean_state.mean(axis=0)
     slope = centred_year @ (ocean_state - ocean_mean) / (centred_year @ centred_year)
-    ocean_anomaly = ocean_state - ocean_mean - centred_year[:, None] * slope
+    ocean_anomaly = ocean_state - ocean_mean - (centred_year[:, None] * slope if detrend_ocean else 0.0)
     state = np.column_stack((surface_anomaly, ocean_anomaly))
     if not np.isfinite(state).all() or not np.isfinite(ice_area).all():
         raise ValueError("Non-finite Koopman states or South Atlantic ice area")
@@ -268,9 +270,11 @@ def load_fields(
         "years": years,
         "state": state,
         "surface_anomaly": surface_anomaly,
+        "surface_state": surface,
         "surface_lat": surface_lat,
         "surface_weights": surface_weights,
         "ocean_anomaly": ocean_anomaly,
+        "ocean_state": ocean_state,
         "ocean_lat": ocean_lat,
         "ocean_weights": ocean_weights,
         "ice_area": ice_area,

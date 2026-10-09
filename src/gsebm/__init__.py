@@ -61,6 +61,8 @@ from gsebm.ivp import (
     solve_temperature_ivp,
 )
 from gsebm.sde import (
+    LimitCycleForcing,
+    OscillatorForcing,
     SDESolution,
     SpatialNoiseProcess,
     build_noise_latitude_grid,
@@ -158,6 +160,8 @@ __all__ = [
     "build_ivp_time_grid",
     "solve_temperature_ivp",
     "SpatialNoiseProcess",
+    "LimitCycleForcing",
+    "OscillatorForcing",
     "SDESolution",
     "build_noise_latitude_grid",
     "build_spatial_noise_process",
