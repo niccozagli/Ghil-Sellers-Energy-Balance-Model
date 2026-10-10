@@ -1,6 +1,6 @@
 # PlaSim annual raw map archive
 
-`scripts/extract_plasim_raw_maps.py` reads matching annual PLA and LSG files
+`scripts/extract_plasim_raw_maps.py` reads matching annual PLA, LSG, ICE, and OCE files
 from `output/spinup` and writes two files under the selected archive root:
 
 - `<experiment>_spinup_raw_maps.nc`: compressed, annual native-grid fields;
@@ -12,17 +12,20 @@ Preview available and extended runs with:
 PLASIM_RAW_MAP_ROOT=/Volumes/Nicco/Plasim/extracted PYTHONPATH=src uv run python scripts/extract_plasim_raw_maps.py --all --dry-run
 ```
 
-Use the same command without `--dry-run` to build missing v2 archives and
-append new years to existing v2 archives. The external volume must be mounted.
+Use a separate `--output-root` for a schema-v3 rebuild. An existing v2 archive
+cannot be upgraded by appending v3 fields to later years. The external volume
+must be mounted when it is selected as the output root.
 
 Run one experiment with `--experiment-dir <path>`, or all available spinup
 experiments with `--all`. The default source root is
 `/Volumes/Nicco/Plasim/experiments`; `--experiments-root` and `--output-root`
 can change the source and destination. Set
 `PLASIM_RAW_MAP_ROOT=/Volumes/Nicco/Plasim/extracted` to store archives on the
-external drive and let the notebook and KDMD reader find them. Without this
-setting or `--output-root`, the destination is `data/Plasim`. Schema-v2
-archives append only new contiguous source blocks. `--refresh` forces a full
+external drive. The notebooks choose explicitly between `data/Plasim` and
+`/Volumes/Nicco/Plasim/extracted`; the environment variable affects the
+extractor's default destination only. Without this setting or `--output-root`,
+the destination is `data/Plasim`. Schema-v3 archives append only new contiguous
+four-component source blocks. `--refresh` forces a full
 rebuild. Initial builds use a persistent partial file; both builds and appends
 commit one source block at a time and resume after interruption. The root-level
 `raw_map_extraction_inventory.json` records coverage, action, size, and time.
@@ -46,12 +49,72 @@ T21 zonal TOA imbalance and surface albedo. The transport terms retain their
 annual-mean-flow proxy interpretation. All fields retain source sign and
 are unfiltered, undetrended, and uncomposited.
 
-Schema v2 also keeps T21 TOA and surface radiative flux maps, sensible and
+The legacy fields also include T21 TOA and surface radiative flux maps, sensible and
 latent heat flux, full surface albedo and snow-depth maps, zonal snowfall and
 evaporation, expanded LSG zonal fields, and Atlantic/Indo-Pacific annual
-meridional volume and temperature-transport proxies. Clear-sky TOA fluxes are
-included when present. The inspected PLA inventory uses codes 208 and 209 for
+meridional volume and temperature-transport proxies. Clear-sky TOA fluxes have
+fixed v3 arrays and annual availability flags. Absent blocks contain NaN,
+and `missing_optional_pla_maps` lists either field absent in a committed block.
+The inspected PLA inventory uses codes 208 and 209 for
 soil temperature, so these codes are not treated as clear-sky radiation.
+
+## Schema v3 native additions
+
+Every block has exactly one file named `<experiment>_<component>.<first>-<last>.nc`
+for each of PLA, LSG, ICE, and OCE. Filename intervals must match, be
+contiguous, and contain the declared number of annual samples. The original
+numeric time and bounds, decoded internal year, and declared-minus-internal
+year are saved separately for all four components. The `year` coordinate
+continues to use the filename labels. For the inspected μ1232.5 sample, those
+labels are 27490–27499 while all internal years are 26990–26999; LSG has a
+different within-year timestamp. This is a measured label difference, not a
+universal correction or a restart-relative calendar. The ledger stores all
+four file signatures, basenames, and source global metadata per block.
+
+All direct annual additions keep their native numbers and source precision,
+including dry and ghost entries. Static wet masks and interface support show
+which cells are physical. Original source units remain in `source_units`;
+`units` states the interpreted unit. New names use a component prefix:
+
+| Component | Native fields added |
+|---|---|
+| ICE, T21 | `heata ofluxa tsfluxa smelta imelta cfluxa fluxca qmelta scflxa xflxicea cfluxra cfluxna icec icecc iced ts sst zsnow cpmea croffa stoia clicec2 cliced2` |
+| OCE, T21 | `heata ifluxa fldoa fssta dssta qhda sst icec clsst` |
+| LSG, 22 depths or interfaces | `t s utot vtot w` (22 levels each); `convad` (21 native levels) |
+| LSG, scalar/vector surface | `convadd flukhea fluxhea fluwat flukwat tbound sice zeta fldsst fldice fldpme fldtaux fldtauy taux tauy ub vb` |
+| PLA, T21 | `mld prl prc prsn evap mrro snm sndc tauu tauv ssru stru clt tas prw` |
+| PLA, 10 model levels | `cl clw`, with hybrid coefficients and model-level coordinates |
+
+Static additions include `ice_ls`, `oce_ls`, native convection depth,
+internal-interface wet area, and partial vector-layer thickness. `ice_stoia`
+is a water-equivalent rate in m s-1; `oce_dssta` and `oce_qhda` are heat fluxes
+in W m-2. Their source units remain separately recorded. `lsg_convadd` stays
+mW m-2, `lsg_tbound` stays K, and `lsg_s` retains the source `0/00` scale.
+The dimensional meaning of `lsg_fldice` remains unverified; it has no
+canonical `units` attribute. ICE `cfluxa` and OCE `heata` are one repeated
+transfer in the inspected sample, not additive heat inputs. A direct ICE
+P−E field is not a complete LSG salt budget. No LSG process temperature
+tendencies were extracted; this is recorded explicitly.
+
+The ten-year μ1232.5 quartet produced a 21.45 MB v3 archive in about 7.1–7.3 s
+with one worker; peak process RSS was about 395 MB on the local machine.
+Size and throughput over long records remain to be measured.
+Begin a long migration with a separate staging root and one worker, inventory
+four-component coverage, then size cluster memory and concurrency from those
+measurements. Preserve compatible refined basin masks when moving archives.
+The inspected local workspace contains only the μ1232.5 ten-year quartet;
+ICE/OCE coverage across the long experiments still needs an inventory before
+full migration. The cold-branch provenance supplied by the user is:
+
+| Child μ | Parent μ | Parent restart label |
+|---|---|---:|
+| 1228.5 | 1230 | 14499 |
+| 1227 | 1228.5 | 15799 |
+| 1226 | 1228.5 | 15799 |
+
+The 1226/1227 archive labels 158000–158899 remain labels; elapsed time since
+restart is unverified. Source-code defaults do not establish the namelist or
+build settings used by these output files.
 
 The first schema-v2 archive, μ1240, covers years 5000–17379 (12,380 annual
 records; 1,238 source blocks). Its completed file is 5,452,077,209 bytes.
@@ -76,9 +139,9 @@ schema v2. S3 pathway arrows can use phase composites of annual currents or
 the full-archive mean currents. Changing the time window or anomaly display
 reuses the annual series. Selecting another μ reads its archive once per
 notebook session. No other command or derived file is required.
-When `/Volumes/Nicco/Plasim/extracted` is mounted and contains archives, the
-notebook selects it by default; `PLASIM_RAW_MAP_ROOT` still overrides that
-choice. The selected archive root is shown above the μ selector.
+Choose the notebook's Archive root explicitly. Its choices are the repository
+archive directory and the external drive directory; the selected root is
+shown above the μ selector.
 
 ## Extraction on the cluster
 
@@ -110,6 +173,8 @@ The extraction task requests the `short` partition (1-day limit), with a
 `WORKERS` (default 4) sets the reader processes, and `MAX_PARALLEL` (default 4)
 sets how many tasks run at once. A task that reaches its 3.5-hour limit leaves a
 committed partial archive; resubmitting the same selection continues it.
+The v3 payload is much larger than v2. Review these concurrency defaults after
+measuring full-block memory and throughput on the target cluster.
 
 Archives built from local copies of the source files cannot be extended on
 the cluster. The append check compares each source block's size and

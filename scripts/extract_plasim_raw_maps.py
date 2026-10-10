@@ -94,6 +94,11 @@ def main(
                 first_year=inventory.first_year,
                 last_year=inventory.last_year,
                 source_files=len(inventory.lsg_paths),
+                source_blocks=len(inventory.lsg_paths),
+                lsg_file_count=len(inventory.lsg_paths),
+                pla_file_count=len(inventory.pla_paths),
+                ice_file_count=len(inventory.ice_paths),
+                oce_file_count=len(inventory.oce_paths),
                 extracted_years=plan.existing_years,
                 action=plan.action,
                 new_years=(
@@ -131,7 +136,7 @@ def main(
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report, indent=2) + "\n")
         typer.echo(report_path)
-    if any(entry["action"] == "failed" for entry in report if entry.get("source_files")):
+    if any(entry["action"] == "failed" for entry in report):
         raise typer.Exit(1)
 
 

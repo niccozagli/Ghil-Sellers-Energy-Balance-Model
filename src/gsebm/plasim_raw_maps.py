@@ -15,10 +15,13 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
 from tempfile import NamedTemporaryFile
 from typing import Callable
 
 import h5netcdf
+import h5py
 import numpy as np
 import xarray as xr
 
@@ -29,14 +32,13 @@ from gsebm.plasim_diagnostics import (
     _lsg_wet_cell_volumes,
     LSG_EARTH_RADIUS_M,
     LSG_HORIZONTAL_GRID_SPACING_DEGREES,
-    find_mechanism_field_files,
     lsg_ocean_layer_maps_for_file,
     lsg_zonal_fields_for_file,
     plasim_surface_maps_for_file,
 )
 
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 _WORKER_GEOMETRY: dict[str, tuple[tuple[str, ...], np.ndarray]] | None = None
 UPPER_DEPTH_LIMIT_M = 1025.0
 DEEP_BANDS_M = (("1025_2000m", 1025.0, 2000.0), ("2000_6000m", 2000.0, 6000.0))
@@ -75,7 +77,23 @@ SOURCE_COLUMNS = (
     "source_first_year", "source_last_year", "source_lsg_size", "source_pla_size",
     "source_lsg_mtime_ns", "source_pla_mtime_ns",
     "source_lsg_name_hash", "source_pla_name_hash",
+    "source_ice_size", "source_oce_size", "source_ice_mtime_ns", "source_oce_mtime_ns",
+    "source_ice_name_hash", "source_oce_name_hash",
 )
+COMPONENTS = ("lsg", "pla", "ice", "oce")
+DIRECT_FIELDS = {
+    "ice": "heata ofluxa tsfluxa smelta imelta cfluxa fluxca qmelta scflxa xflxicea cfluxra cfluxna icec icecc iced ts sst zsnow cpmea croffa stoia clicec2 cliced2".split(),
+    "oce": "heata ifluxa fldoa fssta dssta qhda sst icec clsst".split(),
+    "lsg": "t s utot vtot w convad convadd flukhea fluxhea fluwat flukwat tbound sice zeta fldsst fldice fldpme fldtaux fldtauy taux tauy ub vb".split(),
+    "pla": "mld prl prc prsn evap mrro snm sndc tauu tauv ssru stru clt cl clw tas prw".split(),
+}
+UNIT_CORRECTIONS = {"ice_stoia": "m s-1", "oce_dssta": "W m-2", "oce_qhda": "W m-2"}
+CANONICAL_UNITS = {
+    "W/m2": "W m-2", "mW/m2": "mW m-2", "m/s": "m s-1",
+    "kg/m2": "kg m-2", "kg/kg": "kg kg-1", "0-1": "1", "frac.": "1",
+    "m h2o": "m", "1": "1", "K": "K", "m": "m", "Pa": "Pa", "0/00": "0/00",
+}
+OPTIONAL_FIELDS = ("toa_clear_sky_shortwave", "toa_clear_sky_longwave")
 
 
 def raw_map_root() -> Path:
@@ -84,6 +102,15 @@ def raw_map_root() -> Path:
     if configured:
         return Path(configured).expanduser()
     return REPO_RAW_MAP_ROOT
+
+
+def _extractor_revision() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=get_repo_root(), stderr=subprocess.DEVNULL, text=True,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
 
 
 REPO_RAW_MAP_ROOT = get_repo_root() / "data" / "Plasim"
@@ -99,6 +126,8 @@ class RawMapInventory:
     experiment: str
     lsg_paths: tuple[Path, ...]
     pla_paths: tuple[Path, ...]
+    ice_paths: tuple[Path, ...]
+    oce_paths: tuple[Path, ...]
     first_year: int
     last_year: int
 
@@ -108,7 +137,7 @@ class RawMapInventory:
 
 
 def _declared_years(path: Path) -> np.ndarray:
-    match = re.search(r"_(?:LSG|PLA)\.(\d+)-(\d+)\.nc$", path.name)
+    match = re.search(r"_(?:LSG|PLA|ICE|OCE)\.(\d+)-(\d+)\.nc$", path.name)
     if match is None:
         raise ValueError(f"Unrecognized PlaSim annual filename: {path}")
     first, last = map(int, match.groups())
@@ -118,23 +147,37 @@ def _declared_years(path: Path) -> np.ndarray:
 
 
 def inventory_experiment(experiment_dir: Path, state: str = "spinup") -> RawMapInventory:
-    """Match PLA and LSG files by declared years and reject gaps or overlaps."""
-    lsg_paths, pla_paths = find_mechanism_field_files(experiment_dir, state)
-    lsg_years = np.concatenate([_declared_years(path) for path in lsg_paths])
-    pla_years = np.concatenate([_declared_years(path) for path in pla_paths])
-    if not np.array_equal(lsg_years, pla_years):
-        raise ValueError(f"PLA and LSG year coverage differs for {experiment_dir.name}")
-    if len(lsg_paths) != len(pla_paths) or any(
-        not np.array_equal(_declared_years(lsg), _declared_years(pla))
-        for lsg, pla in zip(lsg_paths, pla_paths)
-    ):
-        raise ValueError(f"PLA and LSG file blocks differ for {experiment_dir.name}")
+    """Match complete four-component blocks and reject incomplete coverage."""
+    directory = experiment_dir / "output" / state
+    if not directory.is_dir():
+        raise FileNotFoundError(directory)
+    paths = {component: [] for component in COMPONENTS}
+    for path in directory.glob("*.nc"):
+        match = re.fullmatch(r"(.+)_(LSG|PLA|ICE|OCE)\.(\d+)-(\d+)\.nc", path.name)
+        if match is None:
+            continue
+        if match.group(1) != experiment_dir.name:
+            raise ValueError(f"Source experiment prefix differs: {path}")
+        _declared_years(path)
+        paths[match.group(2).lower()].append(path)
+    if not any(paths.values()):
+        raise FileNotFoundError(f"No annual source files in {directory}")
+    for component in COMPONENTS:
+        paths[component].sort(key=lambda p: int(_declared_years(p)[0]))
+        if not paths[component]:
+            raise ValueError(f"Missing {component.upper()} source files in {directory}")
+    intervals = {component: [(int(y[0]), int(y[-1])) for p in files if (y := _declared_years(p)) is not None]
+                 for component, files in paths.items()}
+    reference = intervals["lsg"]
+    for component, ranges in intervals.items():
+        if ranges != reference:
+            raise ValueError(f"Four-component year coverage differs for {experiment_dir.name}: {component.upper()} {ranges} vs LSG {reference}")
+    lsg_years = np.concatenate([_declared_years(path) for path in paths["lsg"]])
     if not np.array_equal(lsg_years, np.arange(lsg_years[0], lsg_years[-1] + 1)):
         raise ValueError(f"Missing or overlapping source years for {experiment_dir.name}")
     return RawMapInventory(
         experiment_dir.name,
-        tuple(lsg_paths),
-        tuple(pla_paths),
+        *(tuple(paths[name]) for name in COMPONENTS),
         int(lsg_years[0]),
         int(lsg_years[-1]),
     )
@@ -165,15 +208,17 @@ class ExtractionPlan:
     completed_blocks: int
 
 
-def _source_signature(lsg: Path, pla: Path) -> tuple[int, ...]:
+def _source_signature(lsg: Path, pla: Path, ice: Path, oce: Path) -> tuple[int, ...]:
     years = _declared_years(lsg)
-    lsg_stat, pla_stat = lsg.stat(), pla.stat()
+    stats = [path.stat() for path in (lsg, pla, ice, oce)]
     name_hash = lambda path: int.from_bytes(
         hashlib.sha256(path.name.encode()).digest()[:8], "big", signed=True
     )
     return (
-        int(years[0]), int(years[-1]), lsg_stat.st_size, pla_stat.st_size,
-        lsg_stat.st_mtime_ns, pla_stat.st_mtime_ns, name_hash(lsg), name_hash(pla),
+        int(years[0]), int(years[-1]), stats[0].st_size, stats[1].st_size,
+        stats[0].st_mtime_ns, stats[1].st_mtime_ns, name_hash(lsg), name_hash(pla),
+        stats[2].st_size, stats[3].st_size, stats[2].st_mtime_ns, stats[3].st_mtime_ns,
+        name_hash(ice), name_hash(oce),
     )
 
 
@@ -182,17 +227,22 @@ def plan_extraction(inventory: RawMapInventory, archive: Path, mask: Path, *, re
     partial = archive.with_name(".raw-maps-partial.nc")
     building = partial.exists() and not refresh
     selected = partial if building else archive
-    if refresh or not selected.exists() or (not building and not mask.exists()):
+    if refresh or not selected.exists():
+        return ExtractionPlan("rebuild", existing_year_range(archive), 0)
+    if not building and not mask.exists():
+        with h5netcdf.File(selected, "r") as file:
+            if file.attrs.get("schema_version") != SCHEMA_VERSION:
+                raise ValueError(f"Existing archive has an incompatible schema: {selected}; stage v3 separately or use --refresh")
         return ExtractionPlan("rebuild", existing_year_range(archive), 0)
     if not building:
         with h5netcdf.File(mask, "r") as mask_file:
             if mask_file.attrs.get("schema_version") != SCHEMA_VERSION:
-                return ExtractionPlan("rebuild", existing_year_range(archive), 0)
+                raise ValueError(f"Existing basin mask has an incompatible schema: {mask}; stage v3 separately or use --refresh")
     with h5netcdf.File(selected, "r") as file:
         if file.attrs.get("schema_version") != SCHEMA_VERSION or file.attrs.get("mean_current_mask_applied") != 1:
             if building:
                 raise ValueError(f"Partial archive has an incompatible schema: {partial}; use --refresh")
-            return ExtractionPlan("rebuild", None, 0)
+            raise ValueError(f"Existing archive has an incompatible schema: {selected}; stage v3 separately or use --refresh")
         if file.attrs.get("experiment_name") != inventory.experiment:
             raise ValueError(f"Archive experiment name differs from source: {selected}")
         first = int(file.attrs["first_year"])
@@ -202,7 +252,7 @@ def plan_extraction(inventory: RawMapInventory, archive: Path, mask: Path, *, re
         last = first - 1 if completed == 0 else int(file.variables["source_last_year"][completed - 1])
         for index in range(completed):
             actual = tuple(int(file.variables[name][index]) for name in SOURCE_COLUMNS)
-            expected = _source_signature(inventory.lsg_paths[index], inventory.pla_paths[index])
+            expected = _source_signature(*(paths[index] for paths in (inventory.lsg_paths, inventory.pla_paths, inventory.ice_paths, inventory.oce_paths)))
             if actual != expected:
                 raise ValueError(f"Previously extracted source block changed: {inventory.lsg_paths[index]}; use --refresh")
         if completed and last != int(_declared_years(inventory.lsg_paths[completed - 1])[-1]):
@@ -248,7 +298,16 @@ def _static_geometry(lsg_path: Path, pla_path: Path) -> dict[str, tuple[tuple[st
             "wet_cell_volume": (("lsg_depth", "south_north", "west_east"), volume.astype("float64")),
             "lsg_horizontal_area": (("south_north", "west_east"), area.astype("float64")),
             "bathymetry": (("south_north", "west_east"), bathymetry.astype("float64")),
+            "lsg_convection_depth": (("lsg_convection_depth",), np.asarray(source["depth_3"], dtype="float64")),
+            "lsg_depth_interface": (("lsg_depth_interface",), np.asarray(source["depth_2"], dtype="float64")),
         }
+        if not np.array_equal(geometry["lsg_convection_depth"][1], depth[1:]):
+            raise ValueError(f"Unexpected LSG convection depth grid in {lsg_path}")
+        interface_area = np.zeros_like(wet, dtype="float64")
+        interface_area[:-1] = area[None] * wet[1:]
+        geometry["lsg_interface_wet_area"] = (("lsg_depth_interface", "south_north", "west_east"), interface_area)
+        vector_thickness = wetvec * np.maximum(0, np.minimum(vector_bathymetry[None], upper[:, None, None]) - lower[:, None, None])
+        geometry["lsg_vector_layer_thickness"] = (("lsg_depth", "south_north", "west_east"), vector_thickness.astype("float64"))
         for label, start, stop in DEEP_BANDS_M:
             thickness = _layer_overlap_thickness(bathymetry, lower, upper, start, stop) * wet
             geometry[f"deep_wet_volume_{label}"] = (
@@ -265,6 +324,11 @@ def _static_geometry(lsg_path: Path, pla_path: Path) -> dict[str, tuple[tuple[st
             t21_lon=(("t21_lon",), np.asarray(source["lon"], dtype="float64")),
             t21_gaussian_weight=(("t21_lat",), weights[::-1].astype("float64")),
             lsm=(("t21_lat", "t21_lon"), np.asarray(source["lsm"].isel(time=0), dtype="float64")),
+            pla_model_level=(("pla_model_level",), np.asarray(source["sfc"], dtype="float64")),
+            pla_hyam=(("pla_model_level",), np.asarray(source["hyam"], dtype="float64")),
+            pla_hybm=(("pla_model_level",), np.asarray(source["hybm"], dtype="float64")),
+            pla_hyai=(("pla_model_interface",), np.asarray(source["hyai"], dtype="float64")),
+            pla_hybi=(("pla_model_interface",), np.asarray(source["hybi"], dtype="float64")),
         )
     return geometry
 
@@ -287,19 +351,158 @@ def _native_temperature(lsg_path: Path, geometry: dict[str, tuple[tuple[str, ...
         deep: dict[str, np.ndarray] = {
             "temperature_upper": upper,
             "salinity_upper": np.where(wet[:13][None], salinity[:, :13], np.nan).astype("float32"),
+            "lsg_t": np.asarray(source["t"].values),
+            "lsg_s": np.asarray(source["s"].values),
         }
         for label, start, stop in DEEP_BANDS_M:
             thickness = _layer_overlap_thickness(bathymetry, lower_edges, upper_edges, start, stop) * wet
             denominator = thickness.sum(axis=0)
             mean = np.full((temperature.shape[0], *denominator.shape), np.nan, dtype="float64")
             np.divide(
-                np.sum(temperature * thickness[None], axis=1),
+                np.sum(np.where(thickness[None] > 0, temperature, 0.0) * thickness[None], axis=1),
                 denominator[None],
                 out=mean,
                 where=denominator[None] > 0,
             )
             deep[f"temperature_{label}"] = mean.astype("float32")
         return deep
+
+
+def _source_time(source: xr.Dataset, component: str, years: np.ndarray) -> dict[str, tuple[tuple[str, ...], np.ndarray, dict[str, object]]]:
+    """Retain native numeric dates and explicitly decoded model-year labels."""
+    time = source["time"]
+    units = str(time.attrs.get("units", ""))
+    if units != "day as %Y%m%d.%f":
+        raise ValueError(f"Unsupported {component.upper()} time encoding: {units!r}")
+    values = np.asarray(time.values, dtype="float64")
+    bounds_name = time.attrs.get("bounds", "time_bnds")
+    bounds = np.asarray(source[bounds_name].values, dtype="float64")
+    if values.shape != years.shape or bounds.shape != (len(years), 2):
+        raise ValueError(f"{component.upper()} annual time or bounds shape differs from filename range")
+    if not np.isfinite(values).all() or not np.isfinite(bounds).all():
+        raise ValueError(f"Non-finite {component.upper()} source time in annual block")
+    internal = np.floor(values / 10000).astype("int32")
+    if not np.array_equal(np.diff(internal), np.ones(len(years) - 1, dtype="int32")):
+        raise ValueError(f"{component.upper()} internal years are not consecutive annual samples")
+    if not np.all((bounds[:, 0] <= values) & (values <= bounds[:, 1])):
+        raise ValueError(f"{component.upper()} time lies outside its source bounds")
+    attrs = {"source_component": component.upper(), "source_units": units,
+             "source_calendar": str(time.attrs.get("calendar", "")),
+             "source_bounds_variable": str(bounds_name)}
+    return {
+        f"source_time_{component}": (("year",), values, attrs),
+        f"source_time_bounds_{component}": (("year", "bounds"), bounds, attrs),
+        f"source_internal_year_{component}": (("year",), internal, attrs),
+        f"source_declared_minus_internal_year_{component}": (("year",), years - internal, attrs),
+    }
+
+
+def _direct_fields(
+    paths: tuple[Path, Path, Path, Path], years: np.ndarray,
+    geometry: dict[str, tuple[tuple[str, ...], np.ndarray]], native: dict[str, np.ndarray],
+) -> dict[str, tuple[tuple[str, ...], np.ndarray, dict[str, object]]]:
+    """Copy required native maps, retaining source precision and dry values."""
+    block = {}
+    internal_years = None
+    for component, path in zip(COMPONENTS, paths, strict=True):
+        with xr.open_dataset(path, decode_times=False) as source:
+            chronology = _source_time(source, component, years)
+            current_years = chronology[f"source_internal_year_{component}"][1]
+            if internal_years is not None and not np.array_equal(current_years, internal_years):
+                raise ValueError(f"Internal years differ across four components in {path}")
+            internal_years = current_years
+            block.update(chronology)
+            if component == "pla":
+                for source_name, stored in (("sfc", "pla_model_level"), ("hyam", "pla_hyam"),
+                                            ("hybm", "pla_hybm"), ("hyai", "pla_hyai"), ("hybi", "pla_hybi")):
+                    if not np.array_equal(np.asarray(source[source_name]), geometry[stored][1]):
+                        raise ValueError(f"PLA {source_name} geometry changes in {path}")
+            if component in ("ice", "oce"):
+                for coordinate in ("lat", "lon"):
+                    if not np.array_equal(source[coordinate].values, geometry[f"t21_{coordinate}"][1]):
+                        raise ValueError(f"{component.upper()} T21 {coordinate} differs in {path}")
+                static = np.asarray(source["ls"].values)
+                if static.shape != (len(years), *geometry["lsm"][1].shape) or not np.all(static == static[0]):
+                    raise ValueError(f"{component.upper()} static land mask changes in {path}")
+                if not np.array_equal(static[0] >= .5, geometry["lsm"][1] >= .5):
+                    raise ValueError(f"{component.upper()} land mask differs from PLA in {path}")
+                if f"{component}_ls" in geometry and not np.array_equal(static[0], geometry[f"{component}_ls"][1]):
+                    raise ValueError(f"{component.upper()} land mask changes across blocks in {path}")
+                geometry[f"{component}_ls"] = (("t21_lat", "t21_lon"), static[0])
+            if component == "lsg":
+                for source_name, stored in (("depth", "lsg_depth"), ("depth_2", "lsg_depth_interface"), ("depth_3", "lsg_convection_depth"),
+                                            ("lat", "lat"), ("lon", "lon"), ("lat_2", "lat_2"), ("lon_2", "lon_2")):
+                    if not np.array_equal(np.asarray(source[source_name]), geometry[stored][1]):
+                        raise ValueError(f"LSG {source_name} geometry changes in {path}")
+                for name, stored in (("wet", "wet"), ("wetvec", "wetvec")):
+                    if not np.all(np.asarray(source[name]) == geometry[stored][1][None]):
+                        raise ValueError(f"LSG {name} changes within block {path}")
+                for name, stored in (("depp", "bathymetry"), ("depv", "vector_bathymetry")):
+                    if not np.all(np.asarray(source[name].isel(lev=0)) == geometry[stored][1][None]):
+                        raise ValueError(f"LSG {name} changes within block {path}")
+            for name in DIRECT_FIELDS[component]:
+                variable = source[name]
+                if component in ("pla", "ice", "oce"):
+                    dims = ("year", "pla_model_level", "t21_lat", "t21_lon") if name in ("cl", "clw") else ("year", "t21_lat", "t21_lon")
+                    expected = ("time", "sfc", "lat", "lon") if name in ("cl", "clw") else ("time", "lat", "lon")
+                elif name in ("t", "s", "utot", "vtot"):
+                    dims, expected = ("year", "lsg_depth", "south_north", "west_east"), ("time", "depth", "south_north", "west_east")
+                elif name == "w":
+                    dims, expected = ("year", "lsg_depth_interface", "south_north", "west_east"), ("time", "depth_2", "south_north", "west_east")
+                elif name == "convad":
+                    dims, expected = ("year", "lsg_convection_depth", "south_north", "west_east"), ("time", "depth_3", "south_north", "west_east")
+                else:
+                    dims, expected = ("year", "south_north", "west_east"), ("time", "lev", "south_north", "west_east")
+                if variable.dims != expected:
+                    raise ValueError(f"Unexpected {component.upper()} {name} dimensions {variable.dims} in {path}")
+                values = native[f"lsg_{name}"] if component == "lsg" and name in ("t", "s") else np.asarray(variable.values)
+                if component == "lsg" and expected[1] == "lev":
+                    if values.shape[1] != 1:
+                        raise ValueError(f"Non-singleton LSG lev for {name} in {path}")
+                    values = values[:, 0]
+                output_name = f"{component}_{name}"
+                attrs = {k: v for k, v in variable.attrs.items() if k not in ("coordinates", "formula_terms") and isinstance(v, (str, int, float, np.integer, np.floating))}
+                attrs.update(source_component=component.upper(), source_variable=name,
+                             source_units=str(variable.attrs.get("units", "")),
+                             grid_location=("T21 model level" if name in ("cl", "clw") else "T21") if component != "lsg" else
+                             ("vector" if name in ("utot", "vtot", "fldtaux", "fldtauy", "taux", "tauy", "ub", "vb") else
+                              "interface" if name == "w" else "convection depth" if name == "convad" else "scalar"),
+                             sign_convention="native source values", semantics_status="units_unverified" if output_name == "lsg_fldice" else "source_native",
+                             description="Annual native source values; dry and ghost cells retained separately from physical support")
+                source_units = attrs["source_units"]
+                if source_units not in CANONICAL_UNITS and output_name not in UNIT_CORRECTIONS:
+                    raise ValueError(f"Unrecognized units {source_units!r} for {output_name} in {path}")
+                if source_units in CANONICAL_UNITS:
+                    attrs["units"] = CANONICAL_UNITS[source_units]
+                if output_name in UNIT_CORRECTIONS:
+                    attrs["units"] = UNIT_CORRECTIONS[output_name]
+                    attrs["source_definition"] = "PLASIM_INFO/PLASIM-1.0/plasim/src/oceanmod.f90 or icemod.f90"
+                elif component in ("ice", "oce", "lsg"):
+                    attrs["source_definition"] = f"PLASIM_INFO/PLASIM-1.0/{'lsg' if component == 'lsg' else 'plasim'}/src/{'lsgmod.f90' if component == 'lsg' else 'icemod.f90' if component == 'ice' else 'oceanmod.f90'}"
+                if output_name == "lsg_fldice":
+                    attrs.pop("units", None)
+                if output_name == "lsg_convad":
+                    attrs["description"] = "Annual mean convective-adjustment event indicator; no fabricated 25 m level"
+                if output_name == "lsg_convadd":
+                    attrs["description"] = "Convection-related potential-energy dissipation; not a heat flux"
+                if output_name in ("ice_cfluxa", "oce_heata"):
+                    attrs["description"] = "One repeated ice-to-ocean exchange in the inspected sample; retain both source diagnostics"
+                if output_name == "oce_fldoa":
+                    attrs["description"] = "LSG heat input heats open-water mixed layer and enters ice residual under ice"
+                support = np.ones(values.shape[1:], dtype=bool)
+                if component == "lsg":
+                    if name in ("t", "s", "convad") or name in ("convadd", "flukhea", "fluxhea", "fluwat", "flukwat", "tbound", "sice", "zeta", "fldsst", "fldice", "fldpme"):
+                        wet = geometry["wet"][1].astype(bool)
+                        support = wet if name in ("t", "s") else wet[1:] if name == "convad" else wet[0]
+                    elif name == "w":
+                        support = geometry["lsg_interface_wet_area"][1] > 0
+                    else:
+                        wet = geometry["wetvec"][1].astype(bool)
+                        support = wet if name in ("utot", "vtot") else wet[0]
+                if not np.isfinite(values[:, support]).all():
+                    raise ValueError(f"Non-finite physical {output_name} in {path}")
+                block[output_name] = (dims, values, attrs)
+    return block
 
 
 def _basin_meridional_transports(
@@ -353,6 +556,8 @@ def _basin_meridional_transports(
 def _annual_block(
     lsg_path: Path,
     pla_path: Path,
+    ice_path: Path,
+    oce_path: Path,
     geometry: dict[str, tuple[tuple[str, ...], np.ndarray]],
 ) -> tuple[dict[str, tuple[tuple[str, ...], np.ndarray, dict[str, object]]], dict[str, np.ndarray]]:
     maps = lsg_ocean_layer_maps_for_file(lsg_path)
@@ -369,6 +574,7 @@ def _annual_block(
             variable = dataset[name]
             block[name] = (variable.dims, np.asarray(variable.values), dict(variable.attrs))
     upper = _native_temperature(lsg_path, geometry)
+    block.update(_direct_fields((lsg_path, pla_path, ice_path, oce_path), years, geometry, upper))
     block["temperature_upper"] = (
         ("year", "upper_depth", "south_north", "west_east"), upper["temperature_upper"],
         {"units": "K", "source_variable": "t", "description": "native annual LSG temperature at 13 levels through 950 m"},
@@ -383,7 +589,7 @@ def _annual_block(
             {"units": "K", "source_variable": "t", "weighting": "wet cell volume including partial bottom cells"},
         )
     with xr.open_dataset(pla_path) as source:
-        if not np.array_equal(np.asarray(source["lat"]), geometry["t21_lat"][1]) or not np.array_equal(np.asarray(source["lon"]), geometry["t21_lon"][1]) or not np.array_equal(np.asarray(source["lsm"].isel(time=0)), geometry["lsm"][1]):
+        if not np.array_equal(np.asarray(source["lat"]), geometry["t21_lat"][1]) or not np.array_equal(np.asarray(source["lon"]), geometry["t21_lon"][1]) or not np.all(np.asarray(source["lsm"]) == geometry["lsm"][1][None]):
             raise ValueError(f"T21 static grid or land mask changes in {pla_path}")
         block["zonal_toa_energy_imbalance"] = (
             ("year", "t21_lat"),
@@ -414,11 +620,26 @@ def _annual_block(
                 raise ValueError(f"Ambiguous clear-sky {kind} variables in {pla_path}: {matches}")
             if matches:
                 source_name = matches[0]
+                if str(source[source_name].attrs.get("units", "")) not in ("W/m2", "W m-2"):
+                    raise ValueError(f"Unexpected clear-sky {kind} units in {pla_path}")
+                optional_values = np.asarray(source[source_name], dtype="float64")
+                if not np.isfinite(optional_values).all():
+                    raise ValueError(f"Non-finite available clear-sky {kind} in {pla_path}")
                 block[f"toa_clear_sky_{kind}"] = (
                     ("year", "t21_lat", "t21_lon"),
-                    np.asarray(source[source_name], dtype="float32"),
-                    {**dict(source[source_name].attrs), "source_variable": source_name, "sign_convention": "native PlaSim sign"},
+                    optional_values,
+                    {"units": "W m-2", "source_variable": "matched clear-sky source field", "sign_convention": "native PlaSim sign"},
                 )
+            else:
+                block[f"toa_clear_sky_{kind}"] = (
+                    ("year", "t21_lat", "t21_lon"),
+                    np.full((len(years), len(geometry["t21_lat"][1]), len(geometry["t21_lon"][1])), np.nan, dtype="float64"),
+                    {"source_variable": "matched clear-sky source field", "units": "W m-2", "description": "Optional clear-sky TOA field; NaN when unavailable"},
+                )
+            block[f"toa_clear_sky_{kind}_available"] = (
+                ("year",), np.full(len(years), int(bool(matches)), dtype="int8"),
+                {"description": "1 when the optional source field is present"},
+            )
     for name in ("wet_surface_area", "wet_volume", "wet_vector_cross_section_area"):
         variable = zonal[name]
         values = np.asarray(variable.values)
@@ -452,10 +673,10 @@ def _initialize_worker(geometry: dict[str, tuple[tuple[str, ...], np.ndarray]]) 
     _WORKER_GEOMETRY = geometry
 
 
-def _worker_block(paths: tuple[Path, Path]) -> tuple[dict[str, tuple[tuple[str, ...], np.ndarray, dict[str, object]]], dict[str, np.ndarray]]:
+def _worker_block(paths: tuple[Path, Path, Path, Path]) -> tuple[dict[str, tuple[tuple[str, ...], np.ndarray, dict[str, object]]], dict[str, np.ndarray]]:
     if _WORKER_GEOMETRY is None:
         raise RuntimeError("PlaSim map worker lacks static geometry")
-    return _annual_block(paths[0], paths[1], _WORKER_GEOMETRY)
+    return _annual_block(*paths, _WORKER_GEOMETRY)
 
 
 def _write_array(file: h5netcdf.File, name: str, dims: tuple[str, ...], values: np.ndarray, attrs: dict[str, object] | None = None) -> None:
@@ -512,6 +733,14 @@ def _make_basin_masks(
     dataset.to_netcdf(path, engine="h5netcdf")
 
 
+def _refresh_optional_summary(output: h5netcdf.File, year_count: int) -> None:
+    """Rebuild optional-field availability from the committed annual prefix."""
+    output.attrs["missing_optional_pla_maps"] = json.dumps([
+        name for name in OPTIONAL_FIELDS
+        if not np.all(output.variables[f"{name}_available"][:year_count])
+    ])
+
+
 def extract_raw_maps(
     inventory: RawMapInventory,
     destination: Path,
@@ -520,7 +749,7 @@ def extract_raw_maps(
     refresh: bool = False,
     progress: Callable[[int, int], None] | None = None,
 ) -> tuple[Path, Path]:
-    """Create schema-v2 archives or append only new committed source blocks."""
+    """Create schema-v3 archives or append only new committed source blocks."""
     if workers < 1:
         raise ValueError("workers must be at least 1")
     destination.mkdir(parents=True, exist_ok=True)
@@ -537,16 +766,17 @@ def extract_raw_maps(
             output.resize_dimension("year", committed_years)
             output.resize_dimension("source_block", plan.completed_blocks)
             _update_mean_currents(output, committed_years, recover=True)
+            _refresh_optional_summary(output, committed_years)
             output.attrs["committed_last_year"] = plan.existing_years[1]
             output.attrs["last_year"] = plan.existing_years[1]
             output.flush()
         return archive_path, mask_path
     start_block = plan.completed_blocks if plan.action in ("append", "resume_build") else 0
-    file_pairs = list(zip(inventory.lsg_paths, inventory.pla_paths, strict=True))
-    first_lsg, first_pla = file_pairs[min(start_block, len(file_pairs) - 1)]
+    file_pairs = list(zip(inventory.lsg_paths, inventory.pla_paths, inventory.ice_paths, inventory.oce_paths, strict=True))
+    first_lsg, first_pla, first_ice, first_oce = file_pairs[min(start_block, len(file_pairs) - 1)]
     geometry = _static_geometry(first_lsg, first_pla)
     first_block, first_velocity_sums = _annual_block(
-        first_lsg, first_pla, geometry
+        first_lsg, first_pla, first_ice, first_oce, geometry
     )
     del first_velocity_sums
     dimensions = {
@@ -561,6 +791,9 @@ def extract_raw_maps(
         "lsg_lat": len(geometry["lsg_lat"][1]),
         "lsg_vector_lat": len(geometry["lsg_vector_lat"][1]),
         "lsg_depth_interface": len(geometry["lsg_depth_interface"][1]),
+        "lsg_convection_depth": len(geometry["lsg_convection_depth"][1]),
+        "pla_model_level": len(geometry["pla_model_level"][1]),
+        "pla_model_interface": len(geometry["pla_hyai"][1]),
         "bounds": 2,
     }
     pool_context = (
@@ -583,19 +816,45 @@ def extract_raw_maps(
                     committed_blocks=0,
                     mean_current_mask_applied=1,
                     dynamic_fields=json.dumps(sorted(first_block)),
-                    missing_optional_pla_maps=json.dumps([
-                        name for name in ("toa_clear_sky_shortwave", "toa_clear_sky_longwave")
-                        if name not in first_block
-                    ]),
+                    missing_optional_pla_maps=json.dumps([]),
+                    process_temperature_tendencies_extracted=0,
+                    source_files_meaning="Number of LSG source blocks; four physical files per block",
+                    extractor_revision=_extractor_revision(),
                     temporal_processing="raw annual source values; no detrending, smoothing, or compositing",
+                    process_temperature_tendencies_note="No LSG process temperature tendencies are extracted; inspect each source block before claiming source absence",
                 )
                 for name, (dims, values) in geometry.items():
                     _write_array(output, name, dims, values)
+                for name, source_name in (("pla_model_level", "sfc"), ("pla_hyam", "hyam"), ("pla_hybm", "hybm"),
+                                          ("pla_hyai", "hyai"), ("pla_hybi", "hybi")):
+                    output.variables[name].attrs["source_variable"] = source_name
+                for name in ("lsg_depth", "lsg_depth_interface", "lsg_convection_depth", "pla_model_level"):
+                    output.variables[name].attrs["units"] = "m" if name.startswith("lsg_") else "1"
+                for name in ("ice_ls", "oce_ls"):
+                    output.variables[name].attrs["source_variable"] = "ls"
+                    output.variables[name].attrs["source_component"] = name[:3].upper()
+                for component, path in (("ice", first_ice), ("oce", first_oce)):
+                    with xr.open_dataset(path, decode_times=False) as source:
+                        for key, value in source["ls"].attrs.items():
+                            if isinstance(value, (str, int, float, np.integer, np.floating)):
+                                output.variables[f"{component}_ls"].attrs[f"source_{key}"] = value
+                with xr.open_dataset(first_pla, decode_times=False) as source:
+                    for output_name, input_name in (("pla_model_level", "sfc"), ("pla_hyam", "hyam"),
+                                                    ("pla_hybm", "hybm"), ("pla_hyai", "hyai"), ("pla_hybi", "hybi")):
+                        for key, value in source[input_name].attrs.items():
+                            if key not in ("coordinates", "formula_terms") and isinstance(value, (str, int, float, np.integer, np.floating)):
+                                output.variables[output_name].attrs[f"source_{key}"] = value
                 output.create_variable("year", ("year",), dtype="int32", chunks=(10,))
                 for name in SOURCE_COLUMNS:
                     output.create_variable(name, ("source_block",), dtype="int64", chunks=(100,))
+                for component in COMPONENTS:
+                    output.create_variable(f"source_{component}_basename", ("source_block",), dtype=h5py.string_dtype(encoding="utf-8"))
+                    output.create_variable(f"source_{component}_global_attrs_json", ("source_block",), dtype=h5py.string_dtype(encoding="utf-8"))
                 for name, (dims, values, attrs) in first_block.items():
-                    var = output.create_variable(name, dims, dtype=values.dtype, chunks=(min(10, values.shape[0]), *values.shape[1:]), compression="gzip", compression_opts=4, shuffle=True)
+                    chunk_years = 1 if name.startswith("lsg_") and len(dims) == 4 else min(10, values.shape[0])
+                    chunk_depth = 1 if name.startswith("lsg_") and len(dims) == 4 else (values.shape[1] if len(dims) == 4 else None)
+                    chunks = (chunk_years, chunk_depth, *values.shape[2:]) if len(dims) == 4 else (chunk_years, *values.shape[1:])
+                    var = output.create_variable(name, dims, dtype=values.dtype, chunks=chunks, compression="gzip", compression_opts=4, shuffle=True)
                     for key, value in attrs.items():
                         if isinstance(value, (str, int, float, np.integer, np.floating)):
                             var.attrs[key] = value
@@ -626,6 +885,7 @@ def extract_raw_maps(
                     output.resize_dimension("year", committed_years)
                     output.resize_dimension("source_block", start_block)
                     _update_mean_currents(output, committed_years, recover=True)
+                    _refresh_optional_summary(output, committed_years)
                     output.attrs["committed_last_year"] = plan.existing_years[1]
                     output.attrs["last_year"] = plan.existing_years[1]
             offset = output.dimensions["year"].size
@@ -635,13 +895,28 @@ def extract_raw_maps(
                     pool.map(_worker_block, pending_pairs[index:index + 2 * workers])
                     for index in range(0, len(pending_pairs), 2 * workers)
                 ) if pool is not None else
-                (_annual_block(lsg, pla, geometry) for lsg, pla in pending_pairs)
+                (_annual_block(*paths, geometry) for paths in pending_pairs)
             )
             first_result = ((first_block, {}),) if start_block < len(file_pairs) else ()
             for index, (block, _) in enumerate(chain(first_result, remaining), start=start_block):
                 if sorted(block) != json.loads(output.attrs["dynamic_fields"]):
                     raise ValueError(f"Source field set changes at {file_pairs[index][0]}")
                 n_years = block["surface_temperature"][1].shape[0]
+                for name, (dims, values, attrs) in block.items():
+                    variable = output.variables[name]
+                    if variable.dimensions != dims or values.shape[0] != n_years or values.shape[1:] != variable.shape[1:]:
+                        raise ValueError(f"Field geometry changes for {name} at {file_pairs[index][0]}")
+                    if name.startswith(("lsg_", "pla_", "ice_", "oce_")) and "source_units" in attrs:
+                        for key in ("source_units", "long_name", "code", "cell_methods"):
+                            if str(variable.attrs.get(key, "")) != str(attrs.get(key, "")):
+                                raise ValueError(f"Source metadata {key} changes for {name} at {file_pairs[index][0]}")
+                for component, path in zip(COMPONENTS, file_pairs[index], strict=True):
+                    with xr.open_dataset(path, decode_times=False) as source:
+                        time_attrs = output.variables[f"source_time_{component}"].attrs
+                        if (str(source["time"].attrs.get("units", "")) != time_attrs["source_units"]
+                                or str(source["time"].attrs.get("calendar", "")) != time_attrs["source_calendar"]
+                                or str(source["time"].attrs.get("bounds", "time_bnds")) != time_attrs["source_bounds_variable"]):
+                            raise ValueError(f"Time encoding changes in {path}")
                 output.resize_dimension("year", offset + n_years)
                 output.variables["year"][offset:offset + n_years] = _declared_years(file_pairs[index][0])
                 for name, (_, values, _) in block.items():
@@ -650,11 +925,18 @@ def extract_raw_maps(
                 output.resize_dimension("source_block", index + 1)
                 for name, value in zip(SOURCE_COLUMNS, _source_signature(*file_pairs[index]), strict=True):
                     output.variables[name][index] = value
+                for component, path in zip(COMPONENTS, file_pairs[index], strict=True):
+                    output.variables[f"source_{component}_basename"][index] = path.name
+                    with xr.open_dataset(path, decode_times=False) as source:
+                        output.variables[f"source_{component}_global_attrs_json"][index] = json.dumps({k: str(v) for k, v in source.attrs.items()}, sort_keys=True)
                 output.flush()
                 output.attrs["committed_last_year"] = int(_declared_years(file_pairs[index][0])[-1])
                 output.attrs["last_year"] = int(output.attrs["committed_last_year"])
                 output.attrs["lsg_file_count"] = index + 1
                 output.attrs["pla_file_count"] = index + 1
+                output.attrs["ice_file_count"] = index + 1
+                output.attrs["oce_file_count"] = index + 1
+                _refresh_optional_summary(output, offset + n_years)
                 output.attrs["committed_blocks"] = index + 1
                 output.flush()
                 offset += n_years
@@ -665,12 +947,30 @@ def extract_raw_maps(
     if building:
         with NamedTemporaryFile(prefix=".basin-masks-", suffix=".nc", dir=destination, delete=False) as mask_tmp:
             temporary_mask = Path(mask_tmp.name)
+        replacement_mask: Path | None = None
         try:
             _make_basin_masks(temporary_mask, geometry, inventory.experiment)
+            if mask_path.exists():
+                with h5netcdf.File(mask_path, "r") as existing_mask:
+                    for name in ("lat", "lon", "lat_2", "lon_2", "wet", "wetvec", "lsm"):
+                        if not np.array_equal(existing_mask.variables[name][:], geometry[name][1]):
+                            raise ValueError(f"Existing refined mask geometry differs at {mask_path}")
+                    old_schema = existing_mask.attrs.get("schema_version")
+                if old_schema != SCHEMA_VERSION:
+                    with NamedTemporaryFile(prefix=".preserved-basin-masks-", suffix=".nc", dir=destination, delete=False) as copied:
+                        replacement_mask = Path(copied.name)
+                    shutil.copyfile(mask_path, replacement_mask)
+                    with h5netcdf.File(replacement_mask, "a") as preserved:
+                        preserved.attrs["schema_version"] = SCHEMA_VERSION
+            else:
+                replacement_mask = temporary_mask
             partial_path.replace(archive_path)
-            temporary_mask.replace(mask_path)
+            if replacement_mask is not None:
+                replacement_mask.replace(mask_path)
         finally:
             temporary_mask.unlink(missing_ok=True)
+            if replacement_mask is not None:
+                replacement_mask.unlink(missing_ok=True)
     return archive_path, mask_path
 
 
