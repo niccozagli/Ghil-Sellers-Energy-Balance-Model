@@ -22,6 +22,7 @@ Conventions read from the PlaSim 1.0 source:
 from __future__ import annotations
 
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -30,7 +31,9 @@ import re
 import socket
 import struct
 
-import h5netcdf
+from typing import Callable
+
+import h5py
 import numpy as np
 
 SCHEMA = "plasim-run-inventory/1"
@@ -156,10 +159,12 @@ def output_block(path: Path, first: int, last: int) -> dict[str, object]:
     """Describe one yearly-mean output block and its internal model years."""
     record = _file_record(path) | {"label_first": first, "label_last": last}
     try:
-        with h5netcdf.File(path, "r") as file:
-            time = file.variables["time"]
-            units = str(time.attrs.get("units", ""))
-            values = np.asarray(time[:], dtype="float64")
+        # h5py reads only the time variable; h5netcdf would load all metadata.
+        with h5py.File(path, "r") as file:
+            time = file["time"]
+            units = time.attrs.get("units", b"")
+            units = units.decode() if isinstance(units, bytes) else str(units)
+            values = np.asarray(time[()], dtype="float64")
     except Exception as error:
         return record | {"status": "unreadable", "error": f"{type(error).__name__}: {error}"}
     record["ntime"] = int(values.size)
@@ -224,6 +229,26 @@ def _describe_restart(kind: str, path: Path, ntspd: int, days_per_year: int, has
     return record
 
 
+def _parallel(function, tasks: list[tuple], workers: int, report: Callable[[str], None], label: str) -> list:
+    """Apply ``function`` to argument tuples in order, optionally in processes."""
+    results = []
+    if workers <= 1:
+        iterator = (function(*task) for task in tasks)
+        pool = None
+    else:
+        pool = ProcessPoolExecutor(workers)
+        iterator = pool.map(function, *zip(*tasks), chunksize=16) if tasks else iter(())
+    try:
+        for index, result in enumerate(iterator, 1):
+            results.append(result)
+            if index % 250 == 0:
+                report(f"  {label} {index}/{len(tasks)}")
+    finally:
+        if pool is not None:
+            pool.shutdown(cancel_futures=True)
+    return results
+
+
 def _end_of_year(record: dict[str, object] | None) -> int | None:
     if record is None or "date" not in record:
         return None
@@ -246,8 +271,17 @@ def _slurm_logs(directory: Path) -> list[dict[str, object]]:
     return logs
 
 
-def inventory_run(experiment: Path, phase: str = "spinup", hash_restarts: bool = False) -> dict[str, object]:
-    """Return the inventory of one experiment directory as a JSON-ready dict."""
+def inventory_run(
+    experiment: Path, phase: str = "spinup", hash_restarts: bool = False,
+    progress: Callable[[str], None] | None = None, workers: int = 1,
+) -> dict[str, object]:
+    """Return the inventory of one experiment directory as a JSON-ready dict.
+
+    ``progress``, if given, receives a short message every few hundred files.
+    ``workers > 1`` reads output and restart files in that many processes,
+    which helps when each file access on the cluster file system is slow.
+    """
+    report = progress or (lambda message: None)
     experiment = Path(experiment)
     name = experiment.name
     run = experiment / "run"
@@ -282,25 +316,31 @@ def inventory_run(experiment: Path, phase: str = "spinup", hash_restarts: bool =
 
     unrecognised: dict[str, list[str]] = {"output": [], "restart": [], "diag": []}
 
-    outputs = []
+    output_tasks, output_meta = [], []
     for path in sorted((experiment / "output" / phase).glob("*")):
         match = _OUTPUT.fullmatch(path.name)
         if match is None or match.group(1) != name:
             unrecognised["output"].append(path.name)
             continue
-        first, last = int(match.group(3)), int(match.group(4))
-        outputs.append({"stream": match.group(2)} | output_block(path, first, last))
+        output_tasks.append((path, int(match.group(3)), int(match.group(4))))
+        output_meta.append(match.group(2))
+    report(f"{name}: reading {len(output_tasks)} output blocks with {workers} worker(s)")
+    blocks = _parallel(output_block, output_tasks, workers, report, "output")
+    outputs = [{"stream": stream} | block for stream, block in zip(output_meta, blocks)]
     outputs.sort(key=lambda row: (STREAMS.index(row["stream"]), row["label_first"]))
 
-    restarts: dict[int, dict[str, object]] = {}
+    restart_tasks, restart_meta = [], []
     for path in sorted((experiment / "restart" / phase).glob("*")):
         match = _RESTART.fullmatch(path.name)
         if match is None or match.group(1) != name:
             unrecognised["restart"].append(path.name)
             continue
-        label = int(match.group(3))
-        restarts.setdefault(label, {"label": label})[match.group(2)] = _describe_restart(
-            match.group(2), path, ntspd, days_per_year, hash_restarts)
+        restart_tasks.append((match.group(2), path, ntspd, days_per_year, hash_restarts))
+        restart_meta.append((int(match.group(3)), match.group(2)))
+    report(f"{name}: reading {len(restart_tasks)} restart files with {workers} worker(s)")
+    restarts: dict[int, dict[str, object]] = {}
+    for (label, kind), record in zip(restart_meta, _parallel(_describe_restart, restart_tasks, workers, report, "restart")):
+        restarts.setdefault(label, {"label": label})[kind] = record
     for row in restarts.values():
         rest, lsg = _end_of_year(row.get("REST")), _end_of_year(row.get("LSGREST"))
         row["rest_end_of_year"], row["lsg_end_of_year"] = rest, lsg

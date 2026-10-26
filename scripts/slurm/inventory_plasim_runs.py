@@ -21,25 +21,34 @@ import sys
 
 from gsebm.plasim_run_inventory import format_summary, inventory_run, write_inventory
 
-parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-parser.add_argument("experiments", nargs="+", type=Path, help="Experiment directories.")
-parser.add_argument("--inventory-root", type=Path, default=os.environ.get("PLASIM_INVENTORY_ROOT"),
-                    help="Directory holding one subfolder per experiment (default $PLASIM_INVENTORY_ROOT).")
-parser.add_argument("--phase", default="spinup", help="Subfolder of output/, restart/ and diag/.")
-parser.add_argument("--hash-restarts", action="store_true", help="Also record sha256 of every restart file.")
-args = parser.parse_args()
-if args.inventory_root is None:
-    parser.error("give --inventory-root or set PLASIM_INVENTORY_ROOT")
 
-failed = 0
-for experiment in args.experiments:
-    try:
-        inventory = inventory_run(experiment, args.phase, args.hash_restarts)
-    except Exception as error:
-        print(f"== {experiment.name}: FAILED {type(error).__name__}: {error}", flush=True)
-        failed += 1
-        continue
-    path = write_inventory(inventory, args.inventory_root)
-    print(format_summary(inventory), flush=True)
-    print(f"  written {path}\n", flush=True)
-sys.exit(1 if failed else 0)
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("experiments", nargs="+", type=Path, help="Experiment directories.")
+    parser.add_argument("--inventory-root", type=Path, default=os.environ.get("PLASIM_INVENTORY_ROOT"),
+                        help="Directory holding one subfolder per experiment (default $PLASIM_INVENTORY_ROOT).")
+    parser.add_argument("--phase", default="spinup", help="Subfolder of output/, restart/ and diag/.")
+    parser.add_argument("--workers", type=int, default=1, help="Processes reading files in parallel.")
+    parser.add_argument("--hash-restarts", action="store_true", help="Also record sha256 of every restart file.")
+    args = parser.parse_args()
+    if args.inventory_root is None:
+        parser.error("give --inventory-root or set PLASIM_INVENTORY_ROOT")
+
+    failed = 0
+    for experiment in args.experiments:
+        try:
+            inventory = inventory_run(experiment, args.phase, args.hash_restarts,
+                                      progress=lambda message: print(message, file=sys.stderr, flush=True),
+                                      workers=args.workers)
+        except Exception as error:
+            print(f"== {experiment.name}: FAILED {type(error).__name__}: {error}", flush=True)
+            failed += 1
+            continue
+        path = write_inventory(inventory, args.inventory_root)
+        print(format_summary(inventory), flush=True)
+        print(f"  written {path}\n", flush=True)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
