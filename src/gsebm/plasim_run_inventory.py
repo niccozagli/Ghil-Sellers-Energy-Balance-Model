@@ -45,6 +45,7 @@ TRANSIENT_FILES = (
     "plasim_diag", "plasim_status",
 )
 TIME_UNITS = "day as %Y%m%d.%f"
+STANDARD_ENTRIES = ("initial_conditions", "run", "output", "restart", "diag", "slurm")
 
 _OUTPUT = re.compile(r"(.+)_(PLA|OCE|ICE|LSG)\.(\d+)-(\d+)\.nc")
 _RESTART = re.compile(r"(.+)_(REST|LSGREST|KLEISWI)\.(\d+)\.12")
@@ -421,6 +422,7 @@ def inventory_run(
         "days_per_year": days_per_year,
         "segment_years": segment_years,
         "phases": phases,
+        "other_entries": sorted(p.name for p in experiment.iterdir() if p.name not in STANDARD_ENTRIES),
         "namelists": namelists,
         "slurm_scripts": slurm,
         "slurm_logs": _slurm_logs(diag_dir) if diag_dir.is_dir() else [],
@@ -639,6 +641,8 @@ def format_summary(inventory: dict[str, object]) -> str:
     lines.append("  restart label - model end-of-year:")
     lines += [f"    {r['label_first']}-{r['label_last']}: {r['value']}" for r in summary["restart_label_offsets"]]
     lines.append(f"  run/ state ends model year {summary['run_state_end_of_year']}")
+    if inventory.get("other_entries"):
+        lines.append(f"  other entries in the experiment folder: {inventory['other_entries']}")
     changes = inventory.get("changes_since")
     if changes:
         counts = ", ".join(f"{kind} +{len(changes[kind]['new'])} -{len(changes[kind]['removed'])} "

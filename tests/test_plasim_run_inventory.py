@@ -104,6 +104,9 @@ class PlaSimRunInventoryTest(unittest.TestCase):
             self.assertEqual(summary["run_state_end_of_year"], {"REST": 139, "LSGREST": 139})
             self.assertEqual([r["date"]["end_of_year"] for r in inventory["initial_conditions"]], [99, 99])
             self.assertTrue(any("differ from model years" in p for p in summary["problems"]))
+            self.assertEqual(inventory["other_entries"], [])
+            (exp / "quarantine_restore_20261026").mkdir()
+            self.assertEqual(inventory_run(exp)["other_entries"], ["quarantine_restore_20261026"])
 
             path = write_inventory(inventory, Path(tmp) / "inventory")
             self.assertEqual(path.parent, Path(tmp) / "inventory" / EXP)
