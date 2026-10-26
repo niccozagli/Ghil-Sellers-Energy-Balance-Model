@@ -36,7 +36,8 @@ from typing import Callable
 import h5py
 import numpy as np
 
-SCHEMA = "plasim-run-inventory/1"
+SCHEMA = "plasim-run-inventory/2"
+READABLE_SCHEMAS = ("plasim-run-inventory/1", SCHEMA)
 STREAMS = ("PLA", "OCE", "ICE", "LSG")
 RESTART_KINDS = ("REST", "LSGREST", "KLEISWI")
 TRANSIENT_FILES = (
@@ -50,6 +51,7 @@ _RESTART = re.compile(r"(.+)_(REST|LSGREST|KLEISWI)\.(\d+)\.12")
 _DIAG = re.compile(r"(.+)_DIAG\.(\d+)-(\d+)\.txt")
 _NAMELIST_ENTRY = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*,?\s*$")
 _SLURM_CONTROL = re.compile(r"^(PHASE|FIRST_YEAR|SEGMENT_YEARS|N_SEGMENTS)=(\S+)")
+_COMPLETED = re.compile(r"^Completed (\d+)-(\d+) in ")
 
 
 def sha256(path: Path) -> str:
@@ -249,6 +251,26 @@ def _parallel(function, tasks: list[tuple], workers: int, report: Callable[[str]
     return results
 
 
+def _read_or_reuse(function, tasks: list[tuple], path_of: Callable[[tuple], Path], previous: dict[str, dict],
+                   copy: Callable[[dict], dict], workers: int, report: Callable[[str], None], label: str) -> list:
+    """Copy rows of unchanged files (same name, size, mtime) from ``previous``; read the rest."""
+    results: list = [None] * len(tasks)
+    pending = []
+    for index, task in enumerate(tasks):
+        path = path_of(task)
+        old = previous.get(path.name)
+        if old is not None:
+            current = _file_record(path)
+            if (old["size"], old["mtime"]) == (current["size"], current["mtime"]):
+                results[index] = copy(old)
+                continue
+        pending.append(index)
+    report(f"{label}: {len(tasks) - len(pending)} unchanged, reading {len(pending)} with {workers} worker(s)")
+    for index, result in zip(pending, _parallel(function, [tasks[i] for i in pending], workers, report, label)):
+        results[index] = result
+    return results
+
+
 def _end_of_year(record: dict[str, object] | None) -> int | None:
     if record is None or "date" not in record:
         return None
@@ -262,10 +284,12 @@ def _slurm_logs(directory: Path) -> list[dict[str, object]]:
         record = _file_record(path)
         lines = path.read_text(errors="replace").splitlines()
         started = [line for line in lines if line.startswith("Starting PlaSim segment")]
-        completed = [line for line in lines if line.startswith("Completed ") and "-" in line.split()[1]]
+        completed = [line for line in lines if _COMPLETED.match(line)]
+        segments = [[int(m.group(1)), int(m.group(2))] for line in completed if (m := _COMPLETED.match(line))]
         errors = [line for line in lines if "ERROR" in line or "error" in line.lower()]
         record |= {"first_started": started[0] if started else None,
                    "last_completed": completed[-1] if completed else None,
+                   "completed_segments": segments,
                    "error_lines": errors[-5:], "last_line": lines[-1] if lines else None}
         logs.append(record)
     return logs
@@ -274,12 +298,16 @@ def _slurm_logs(directory: Path) -> list[dict[str, object]]:
 def inventory_run(
     experiment: Path, phase: str = "spinup", hash_restarts: bool = False,
     progress: Callable[[str], None] | None = None, workers: int = 1,
+    previous: dict[str, object] | None = None, reuse: bool = True,
 ) -> dict[str, object]:
     """Return the inventory of one experiment directory as a JSON-ready dict.
 
     ``progress``, if given, receives a short message every few hundred files.
     ``workers > 1`` reads output and restart files in that many processes,
     which helps when each file access on the cluster file system is slow.
+    With a ``previous`` inventory of the same experiment and phase, files whose
+    name, size and mtime are unchanged are copied from it instead of read
+    (unless ``reuse`` is false), and ``changes_since`` lists what differs.
     """
     report = progress or (lambda message: None)
     experiment = Path(experiment)
@@ -287,6 +315,15 @@ def inventory_run(
     run = experiment / "run"
     if not run.is_dir():
         raise FileNotFoundError(run)
+    if previous is not None:
+        if previous.get("schema") not in READABLE_SCHEMAS:
+            raise ValueError(f"Unsupported previous inventory schema {previous.get('schema')!r}")
+        if (previous["experiment"], previous["phase"]) != (name, phase):
+            raise ValueError("Previous inventory is for another experiment or phase")
+    reusing = previous is not None and reuse
+    previous_outputs = {row["file"]: row for row in previous["outputs"]} if reusing else {}
+    previous_restarts = ({row[kind]["file"]: row[kind] for row in previous["restarts"] for kind in RESTART_KINDS if kind in row}
+                         if reusing else {})
 
     namelists = {}
     for path in sorted(run.glob("*_namelist")):
@@ -324,8 +361,9 @@ def inventory_run(
             continue
         output_tasks.append((path, int(match.group(3)), int(match.group(4))))
         output_meta.append(match.group(2))
-    report(f"{name}: reading {len(output_tasks)} output blocks with {workers} worker(s)")
-    blocks = _parallel(output_block, output_tasks, workers, report, "output")
+    blocks = _read_or_reuse(output_block, output_tasks, lambda task: task[0], previous_outputs,
+                            lambda row: {k: v for k, v in row.items() if k != "stream"},
+                            workers, report, f"{name}: output blocks")
     outputs = [{"stream": stream} | block for stream, block in zip(output_meta, blocks)]
     outputs.sort(key=lambda row: (STREAMS.index(row["stream"]), row["label_first"]))
 
@@ -337,9 +375,12 @@ def inventory_run(
             continue
         restart_tasks.append((match.group(2), path, ntspd, days_per_year, hash_restarts))
         restart_meta.append((int(match.group(3)), match.group(2)))
-    report(f"{name}: reading {len(restart_tasks)} restart files with {workers} worker(s)")
+    reusable = ({file: record for file, record in previous_restarts.items() if "sha256" in record}
+                if hash_restarts else previous_restarts)
+    records = _read_or_reuse(_describe_restart, restart_tasks, lambda task: task[1], reusable, dict,
+                             workers, report, f"{name}: restart files")
     restarts: dict[int, dict[str, object]] = {}
-    for (label, kind), record in zip(restart_meta, _parallel(_describe_restart, restart_tasks, workers, report, "restart")):
+    for (label, kind), record in zip(restart_meta, records):
         restarts.setdefault(label, {"label": label})[kind] = record
     for row in restarts.values():
         rest, lsg = _end_of_year(row.get("REST")), _end_of_year(row.get("LSGREST"))
@@ -358,6 +399,12 @@ def inventory_run(
             unrecognised["diag"].append(path.name)
     diag_blocks.sort(key=lambda row: row["label_first"])
 
+    phases = {}
+    for kind in ("output", "restart", "diag"):
+        base = experiment / kind
+        phases[kind] = {path.name: sum(1 for _ in path.iterdir()) for path in sorted(base.iterdir()) if path.is_dir()} \
+            if base.is_dir() else {}
+
     run_state = _restart_state(run, ntspd, days_per_year, True)
     run_state["transient_files"] = [f for f in TRANSIENT_FILES if (run / f).exists()]
     executables = sorted(run.glob("*.x"))
@@ -373,6 +420,7 @@ def inventory_run(
         "steps_per_day": ntspd,
         "days_per_year": days_per_year,
         "segment_years": segment_years,
+        "phases": phases,
         "namelists": namelists,
         "slurm_scripts": slurm,
         "slurm_logs": _slurm_logs(diag_dir) if diag_dir.is_dir() else [],
@@ -383,8 +431,49 @@ def inventory_run(
         "run_state": run_state,
         "unrecognised_files": unrecognised,
     }
+    inventory["changes_since"] = compare_inventories(previous, inventory) if previous else None
     inventory["summary"] = summarise(inventory)
     return inventory
+
+
+def _file_stamps(inventory: dict[str, object]) -> dict[str, dict[str, tuple[int, str]]]:
+    outputs = {row["file"]: (row["size"], row["mtime"]) for row in inventory["outputs"]}
+    restarts = {row[kind]["file"]: (row[kind]["size"], row[kind]["mtime"])
+                for row in inventory["restarts"] for kind in RESTART_KINDS if kind in row}
+    return {"output": outputs, "restart": restarts}
+
+
+def compare_inventories(previous: dict[str, object], current: dict[str, object]) -> dict[str, object]:
+    """List new, removed and changed files and configuration changes since ``previous``."""
+    old, new = _file_stamps(previous), _file_stamps(current)
+    changes: dict[str, object] = {"previous_created": previous["created"]}
+    for kind in ("output", "restart"):
+        before, after = old[kind], new[kind]
+        changes[kind] = {"new": sorted(set(after) - set(before)), "removed": sorted(set(before) - set(after)),
+                         "changed": sorted(f for f in set(before) & set(after) if before[f] != after[f])}
+
+    def hashes(rows):
+        return {row["file"]: row.get("sha256") for row in rows}
+
+    names = set(previous["namelists"]) | set(current["namelists"])
+    changes["namelists_changed"] = sorted(
+        n for n in names
+        if previous["namelists"].get(n, {}).get("sha256") != current["namelists"].get(n, {}).get("sha256"))
+    changes["slurm_scripts_changed"] = hashes(previous["slurm_scripts"]) != hashes(current["slurm_scripts"])
+    changes["executables_changed"] = (hashes(previous["run_state"]["executables"])
+                                      != hashes(current["run_state"]["executables"]))
+    changes["initial_conditions_changed"] = (hashes(previous["initial_conditions"])
+                                             != hashes(current["initial_conditions"]))
+    return changes
+
+
+def latest_inventory(inventory_root: Path, experiment: str, phase: str) -> tuple[Path, dict[str, object]] | None:
+    """Return the newest saved inventory of ``experiment`` for ``phase``, if any."""
+    for path in sorted((Path(inventory_root) / experiment).glob(f"{experiment}_inventory_*.json"), reverse=True):
+        inventory = json.loads(path.read_text())
+        if inventory.get("phase") == phase and inventory.get("schema") in READABLE_SCHEMAS:
+            return path, inventory
+    return None
 
 
 def summarise(inventory: dict[str, object]) -> dict[str, object]:
@@ -450,6 +539,46 @@ def summarise(inventory: dict[str, object]) -> dict[str, object]:
         problems.append(f"labels differ from model years in {len(nonzero)} run(s); see label offsets")
 
     state = inventory["run_state"]
+    for kind in RESTART_KINDS:
+        record = state.get(kind)
+        if record is None:
+            problems.append(f"run/ has no {kind} file")
+            continue
+        if "error" in record:
+            problems.append(f"run/ {record['file']} unreadable: {record['error']}")
+        if sizes[kind]:
+            usual = max(sizes[kind], key=sizes[kind].get)
+            if str(record["size"]) != usual:
+                problems.append(f"run/ {record['file']} is {record['size']} bytes, bundles are {usual}")
+
+    output_years = {y for row in outputs for y in range(row["label_first"], row["label_last"] + 1)}
+    complete_set = {y for first, last in complete_years for y in range(first, last + 1)}
+    logged = sorted({y for log in inventory["slurm_logs"] for first, last in log.get("completed_segments", [])
+                     for y in range(first, last + 1)})
+    logged_missing = _ranges([y for y in logged if y not in complete_set])
+    if logged_missing:
+        problems.append(f"logged as completed without complete output: {logged_missing}")
+    diag_only = _ranges(sorted({y for row in inventory["diag_blocks"]
+                                for y in range(row["label_first"], row["label_last"] + 1)} - output_years))
+    if diag_only:
+        problems.append(f"DIAG files without output: {diag_only}")
+    phases = inventory.get("phases", {})
+    here = sum(phases.get(kind, {}).get(inventory["phase"], 0) for kind in ("output", "restart"))
+    others = sorted({p for kind in ("output", "restart") for p, n in phases.get(kind, {}).items()
+                     if p != inventory["phase"] and n})
+    if not here and others:
+        problems.append(f"phase {inventory['phase']} is empty; files under {others}")
+
+    changes = inventory.get("changes_since")
+    if changes:
+        for kind in ("output", "restart"):
+            for what in ("removed", "changed"):
+                if changes[kind][what]:
+                    problems.append(f"{len(changes[kind][what])} {kind} file(s) {what} since {changes['previous_created']}")
+        for key in ("namelists_changed", "slurm_scripts_changed", "executables_changed", "initial_conditions_changed"):
+            if changes[key]:
+                problems.append(f"{key.replace('_', ' ')} since {changes['previous_created']}: {changes[key]}")
+
     rest, lsg = _end_of_year(state.get("REST")), _end_of_year(state.get("LSGREST"))
     if rest != lsg:
         problems.append(f"run/ plasim_restart ends year {rest} but kleiin1 ends year {lsg}")
@@ -472,6 +601,8 @@ def summarise(inventory: dict[str, object]) -> dict[str, object]:
         "restart_label_offsets": restart_offsets,
         "restart_sizes": sizes,
         "run_state_end_of_year": {"REST": rest, "LSGREST": lsg},
+        "logged_completed_without_output": logged_missing,
+        "diag_without_output": diag_only,
         "problems": problems,
     }
 
@@ -508,6 +639,11 @@ def format_summary(inventory: dict[str, object]) -> str:
     lines.append("  restart label - model end-of-year:")
     lines += [f"    {r['label_first']}-{r['label_last']}: {r['value']}" for r in summary["restart_label_offsets"]]
     lines.append(f"  run/ state ends model year {summary['run_state_end_of_year']}")
+    changes = inventory.get("changes_since")
+    if changes:
+        counts = ", ".join(f"{kind} +{len(changes[kind]['new'])} -{len(changes[kind]['removed'])} "
+                           f"~{len(changes[kind]['changed'])}" for kind in ("output", "restart"))
+        lines.append(f"  since {changes['previous_created']}: {counts}")
     lines.append(f"  problems ({len(summary['problems'])}):")
     lines += [f"    {problem}" for problem in summary["problems"][:40]]
     if len(summary["problems"]) > 40:

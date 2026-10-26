@@ -3,15 +3,19 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
+import os
 import struct
 import unittest
+from unittest.mock import patch
 
 import h5netcdf
 import numpy as np
 
+from gsebm import plasim_run_inventory
 from gsebm.plasim_run_inventory import (
     atmosphere_restart_date,
     inventory_run,
+    latest_inventory,
     lsg_restart_date,
     write_inventory,
 )
@@ -31,10 +35,10 @@ def _write_rest(path: Path, end_of_year: int) -> None:
                      + _record(b"naccuout".ljust(16)) + _record(struct.pack("<i", 31)))
 
 
-def _write_lsgrest(path: Path, year: int) -> None:
+def _write_lsgrest(path: Path, year: int, truncated: bool = False) -> None:
     nddr = [0] * 512
     nddr[10], nddr[11] = -1230, year
-    path.write_bytes(_record(struct.pack("<512q", *nddr)) + _record(b"\0" * 48))
+    path.write_bytes(_record(struct.pack("<512q", *nddr)) + (b"" if truncated else _record(b"\0" * 48)))
 
 
 def _write_output(path: Path, internal_years: list[int]) -> None:
@@ -106,6 +110,58 @@ class PlaSimRunInventoryTest(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text())["summary"], json.loads(json.dumps(summary)))
             with self.assertRaises(FileExistsError):
                 write_inventory(inventory, Path(tmp) / "inventory")
+
+    def test_failure_signs(self):
+        """Logged-but-missing decades, DIAG without output, truncated run/ state, empty phase."""
+        with TemporaryDirectory() as tmp:
+            exp = self._experiment(Path(tmp))
+            log = "".join(f"Starting PlaSim segment: {a}-{a + 9}\nCompleted {a}-{a + 9} in 900 seconds\n"
+                          for a in range(100, 150, 10))
+            (exp / "diag/spinup/slurm-1.out").write_text(log)
+            (exp / f"diag/spinup/{EXP}_DIAG.140-149.txt").write_text("diag\n")
+            _write_lsgrest(exp / "run/kleiin1", 139, truncated=True)
+            summary = inventory_run(exp)["summary"]
+            self.assertEqual(summary["logged_completed_without_output"], [[130, 149]])
+            self.assertEqual(summary["diag_without_output"], [[140, 149]])
+            self.assertTrue(any(p.startswith("run/ kleiin1 is") for p in summary["problems"]))
+
+            (exp / "output/stationary").mkdir()
+            empty = inventory_run(exp, phase="stationary")
+            self.assertTrue(any("phase stationary is empty" in p for p in empty["summary"]["problems"]))
+
+    def test_compare_and_reuse(self):
+        with TemporaryDirectory() as tmp:
+            exp = self._experiment(Path(tmp))
+            root = Path(tmp) / "inventory"
+            first = inventory_run(exp)
+            write_inventory(first, root)
+
+            for stream in ("PLA", "OCE", "ICE", "LSG"):
+                _write_output(exp / f"output/spinup/{EXP}_{stream}.140-149.nc", list(range(140, 150)))
+            changed = exp / f"output/spinup/{EXP}_PLA.100-109.nc"
+            _write_output(changed, list(range(100, 109)))
+            os.utime(changed, (1e9, 1e9))
+            (exp / f"restart/spinup/{EXP}_KLEISWI.109.12").unlink()
+
+            path, previous = latest_inventory(root, EXP, "spinup")
+            with patch.object(plasim_run_inventory, "output_block", wraps=plasim_run_inventory.output_block) as reader:
+                second = inventory_run(exp, previous=previous)
+            self.assertEqual(reader.call_count, 5)  # four new blocks and the changed one
+            changes = second["changes_since"]
+            self.assertEqual(len(changes["output"]["new"]), 4)
+            self.assertEqual(changes["output"]["changed"], [changed.name])
+            self.assertEqual(changes["restart"]["removed"], [f"{EXP}_KLEISWI.109.12"])
+            self.assertFalse(changes["namelists_changed"])
+            problems = second["summary"]["problems"]
+            self.assertTrue(any("1 output file(s) changed" in p for p in problems))
+            self.assertTrue(any("1 restart file(s) removed" in p for p in problems))
+            unchanged = f"{EXP}_OCE.110-119.nc"
+            row = lambda inv: next(r for r in inv["outputs"] if r["file"] == unchanged)
+            self.assertEqual(row(second), row(first))
+
+            with patch.object(plasim_run_inventory, "output_block", wraps=plasim_run_inventory.output_block) as reader:
+                inventory_run(exp, previous=previous, reuse=False)
+            self.assertEqual(reader.call_count, 20)
 
 
 if __name__ == "__main__":
