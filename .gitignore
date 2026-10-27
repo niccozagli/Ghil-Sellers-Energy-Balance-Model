@@ -25,3 +25,6 @@ PLASIM_INFO
 # Local agent reports
 Claude/
 AGENTS.md
+
+# Literature (PDFs, local only; list in PLASIM_INFO/REFERENCES.md)
+references/
