@@ -5,19 +5,26 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 import h5netcdf
+import h5py
 import numpy as np
 import xarray as xr
 
 from gsebm.paths import get_repo_root
 from gsebm.plasim_grids import t21_gaussian_grid
 from gsebm.plasim_indicators import (
+    PRODUCT_VERSION,
     acc_transport,
+    append_indicators,
+    load_indicators,
+    read_manifest,
+    update_indicators,
     area_mean,
     area_total,
     find_decades,
@@ -297,6 +304,94 @@ class SampleDecadeTests(unittest.TestCase):
         zonal = xr.load_dataset(root / SAMPLE_RUN / f"{stem}_zonal.nc", engine="h5netcdf")
         self.assertEqual(zonal.attrs["schema"], "plasim-indicators/1")
         self.assertEqual(int(zonal.model_year[0]), 27490 - 500)
+
+
+def shifted_copy(source: Path, target: Path, years: int) -> None:
+    """Copy an output file and move its time coordinate by ``years`` (day as %Y%m%d.%f)."""
+    shutil.copyfile(source, target)
+    with h5py.File(target, "r+") as file:
+        file["time"][...] = file["time"][...] + years * 1e4
+
+
+@unittest.skipUnless(all(path.is_file() for path in SAMPLE_FILES) and SOURCE_BEKLAS.is_file(),
+                     "sample decade not present")
+class AppendTests(unittest.TestCase):
+    """Appending a decade must give the same product as computing both decades at once."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.second_decade = self.root / "second_decade"
+        self.second_decade.mkdir()
+        for path in SAMPLE_FILES:
+            target = self.second_decade / path.name.replace(SAMPLE_LABELS, "27500-27509")
+            shifted_copy(path, target, 10)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def experiment(self, name: str, both_decades: bool) -> Path:
+        experiment = self.root / name / SAMPLE_RUN
+        output = experiment / "output" / "spinup"
+        output.mkdir(parents=True)
+        for path in SAMPLE_FILES:
+            (output / path.name).symlink_to(path)
+        if both_decades:
+            self.add_second_decade(experiment)
+        return experiment
+
+    def add_second_decade(self, experiment: Path) -> None:
+        for path in self.second_decade.iterdir():
+            (experiment / "output" / "spinup" / path.name).symlink_to(path)
+
+    def products(self, name: str) -> Path:
+        return self.root / name / "products"
+
+    def test_append_gives_the_same_product_as_a_full_run(self):
+        full_zonal, full_sections, _ = run_indicators(self.experiment("full", True), "spinup", SOURCE_BEKLAS)
+
+        experiment = self.experiment("incremental", False)
+        first = update_indicators(experiment, "spinup", SOURCE_BEKLAS, self.products("incremental"), "test")
+        self.assertEqual(first["mode"], "full")
+        self.add_second_decade(experiment)
+        second = update_indicators(experiment, "spinup", SOURCE_BEKLAS, self.products("incremental"), "test")
+        self.assertEqual((second["mode"], second["computed_from"], second["last_label"]), ("append", 27500, 27509))
+
+        stem = product_stem(SAMPLE_RUN, "spinup")
+        zonal = load_indicators(self.products("incremental") / f"{stem}_zonal.nc")
+        sections = load_indicators(self.products("incremental") / f"{stem}_sections.nc")
+        np.testing.assert_array_equal(zonal.year, np.arange(27490, 27510))
+        np.testing.assert_array_equal(zonal.model_year, np.arange(26990, 27010))
+        for name in full_zonal.data_vars:
+            np.testing.assert_array_equal(zonal[name].values, full_zonal[name].values, err_msg=name)
+        for name in full_sections.data_vars:
+            np.testing.assert_array_equal(sections[name].values, full_sections[name].values, err_msg=name)
+
+        manifest = read_manifest(self.products("incremental"), SAMPLE_RUN, "spinup")
+        self.assertEqual([entry["mode"] for entry in manifest["history"]], ["full", "append"])
+        self.assertEqual(manifest["decades_used"], [[27490, 27499], [27500, 27509]])
+        third = update_indicators(experiment, "spinup", SOURCE_BEKLAS, self.products("incremental"), "test")
+        self.assertEqual(third["mode"], "up to date")
+
+    def test_another_product_version_means_a_full_recompute(self):
+        experiment = self.experiment("version", False)
+        update_indicators(experiment, "spinup", SOURCE_BEKLAS, self.products("version"), "test")
+        path = self.products("version") / f"{product_stem(SAMPLE_RUN, 'spinup')}_manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["product_version"] = PRODUCT_VERSION - 1
+        path.write_text(json.dumps(manifest))
+        self.add_second_decade(experiment)
+        summary = update_indicators(experiment, "spinup", SOURCE_BEKLAS, self.products("version"), "test")
+        self.assertEqual((summary["mode"], summary["computed_from"]), ("full", 27490))
+
+    def test_a_changed_static_field_stops_the_append(self):
+        experiment = self.experiment("static", False)
+        zonal, sections, record = run_indicators(experiment, "spinup", SOURCE_BEKLAS)
+        manifest = {"decades_used": record["decades_used"]}
+        zonal["t21_ocean_fraction"] = zonal["t21_ocean_fraction"] * 0.5
+        self.add_second_decade(experiment)
+        with self.assertRaises(ValueError):
+            append_indicators(experiment, "spinup", SOURCE_BEKLAS, manifest, zonal, sections)
 
 
 if __name__ == "__main__":

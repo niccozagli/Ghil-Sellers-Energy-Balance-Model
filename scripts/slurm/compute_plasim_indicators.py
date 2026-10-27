@@ -13,15 +13,19 @@ Two subcommands, run from the repository clone:
         --experiments-root <experiments> [--experiments-root <more>] --output-root <root>
 
 lists every experiment with output and says whether its product is
-"up to date", "missing" or has "new decades" (--stale prints only those
-that are not up to date, as "<experiment dir> <phase>" lines).
+"up to date", "missing" or has "new decades". --stale prints only those that
+are not up to date, as "<experiment dir> <phase>" lines; --all-paths prints
+every run that way.
 
     python scripts/slurm/compute_plasim_indicators.py run \
-        --output-root <root> [--phase spinup] <experiments>/CONTROL_..._MU_1245
+        --output-root <root> [--phase spinup] [--full] <experiments>/CONTROL_..._MU_1245
 
-recomputes each given run in full from its complete decades. The output
-root defaults to $PLASIM_INDICATOR_ROOT. Nothing is written inside the
-experiment directories.
+brings each given run's product up to date: new complete decades are
+appended to an existing product with the same product_version; a missing
+product, another product_version or --full means a full recompute from the
+first decade. Raise PRODUCT_VERSION in plasim_indicators.py whenever a
+formula changes, then rerun with --full. The output root defaults to
+$PLASIM_INDICATOR_ROOT. Nothing is written inside the experiment directories.
 """
 import argparse
 import json
@@ -29,7 +33,7 @@ import os
 from pathlib import Path
 import sys
 
-from gsebm.plasim_indicators import run_indicators, run_status, write_indicator_files
+from gsebm.plasim_indicators import run_status, update_indicators
 
 
 def phases_with_output(experiment: Path) -> list[str]:
@@ -48,9 +52,9 @@ def status_command(args: argparse.Namespace) -> int:
                 status = run_status(experiment, phase, args.output_root / experiment.name)
                 rows.append((experiment, phase, status))
     for experiment, phase, status in rows:
-        if args.stale:
-            if status["status"] != "up to date":
-                print(f"{experiment} {phase}")
+        if args.all_paths or (args.stale and status["status"] != "up to date"):
+            print(f"{experiment} {phase}")
+        if args.all_paths or args.stale:
             continue
         detail = ""
         if status["status"] == "new decades":
@@ -70,16 +74,12 @@ def run_command(args: argparse.Namespace) -> int:
     for experiment in args.experiments:
         beklas = args.beklas or experiment / "run" / "beklas"
         try:
-            zonal, sections, record = run_indicators(experiment, args.phase, beklas, report)
-            written = write_indicator_files(zonal, sections, record, args.output_root / experiment.name, command)
+            summary = update_indicators(experiment, args.phase, beklas, args.output_root / experiment.name,
+                                        command, full=args.full, progress=report)
         except Exception as error:
             print(f"== {experiment.name}: FAILED {type(error).__name__}: {error}", flush=True)
             failed += 1
             continue
-        summary = {"experiment": experiment.name, "phase": args.phase,
-                   "first_label": record["decades_used"][0][0], "last_label": record["decades_used"][-1][1],
-                   "decades": len(record["decades_used"]), "left_out": record["left_out"],
-                   "checks": record["checks"], "files": [str(path) for path in written]}
         print(json.dumps(summary), flush=True)
     return 1 if failed else 0
 
@@ -98,12 +98,16 @@ def main() -> int:
                         help="Directory of experiment folders; may be given more than once.")
     status.add_argument("--stale", action="store_true",
                         help="Print only runs that are not up to date, as '<experiment dir> <phase>'.")
+    status.add_argument("--all-paths", action="store_true",
+                        help="Print every run as '<experiment dir> <phase>' (for a full recompute of all).")
 
     run = commands.add_parser("run", parents=[common], help="Recompute the product of the given runs in full.")
     run.add_argument("experiments", nargs="+", type=Path, help="Experiment directories.")
     run.add_argument("--phase", default="spinup", help="Subfolder of output/ (stationary for the base run).")
     run.add_argument("--beklas", type=Path, default=None,
                      help="LSG basin file (default <experiment>/run/beklas).")
+    run.add_argument("--full", action="store_true",
+                     help="Recompute from the first decade even if new decades could be appended.")
 
     args = parser.parse_args()
     if args.output_root is None:

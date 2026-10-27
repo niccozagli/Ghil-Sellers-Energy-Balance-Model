@@ -7,7 +7,10 @@ Cluster side (run by ``scripts/slurm/compute_plasim_indicators.py``):
 - ``find_decades`` lists the complete output decades of one run;
 - ``run_indicators`` reads them in label order and returns two datasets
   (zonal and sections) plus the record of what was used;
-- ``write_indicator_files`` writes them with a JSON manifest;
+- ``append_indicators`` adds the decades after an existing product's last
+  one, with the same result as a full run;
+- ``update_indicators`` chooses between the two (``PRODUCT_VERSION``) and
+  ``write_indicator_files`` writes the files with a JSON manifest;
 - ``run_status`` tells whether a run's product is up to date.
 
 Laptop side: ``load_indicators``, ``area_mean``, ``area_total`` and
@@ -39,6 +42,9 @@ from gsebm.plasim_grids import (
 from gsebm.plasim_run_inventory import STREAMS, list_output_files, output_block, read_namelist
 
 SCHEMA = "plasim-indicators/1"
+# Raise by hand whenever a formula, mask or output variable changes: a product
+# is only extended by appending when its version equals this one.
+PRODUCT_VERSION = 1
 
 PLA_FIELDS = ("tas", "ts", "rst", "rlut", "rsut", "rss", "rls", "hfss", "hfls", "sic", "sit")
 OCE_FIELDS = ("sst", "fldoa")
@@ -306,49 +312,114 @@ FLOAT64_VARIABLES = ("salt_content",)  # its changes are ~1e-7 relative, below f
 
 
 def run_indicators(experiment: Path, phase: str, beklas_path: Path,
-                   progress: Callable[[str], None] | None = None
+                   progress: Callable[[str], None] | None = None,
+                   found: tuple[list[Decade], list[dict[str, object]]] | None = None,
                    ) -> tuple[xr.Dataset, xr.Dataset, dict[str, object]]:
     """Compute the zonal and sections datasets of one run from all its complete decades.
 
     Returns ``(zonal, sections, record)``; ``record`` lists the decades used
-    and left out and the run-level checks of §5, for the manifest.
+    and left out and the run-level checks of §5, for the manifest. ``found``
+    is the result of ``find_decades``, if the caller already has it.
     """
-    report = progress or (lambda message: None)
     experiment = Path(experiment)
-    decades, left_out = find_decades(experiment, phase)
+    decades, left_out = found or find_decades(experiment, phase)
+    t21, lsg = _grids(decades[0], beklas_path)
+    zonal, sections = _compute(decades, t21, lsg, experiment.name, progress)
+    record = _record(experiment, phase, decades, left_out, zonal)
+    record["mode"], record["computed_from"] = "full", decades[0].first
+    return zonal, sections, record
 
-    with xr.open_dataset(decades[0].paths["PLA"], decode_times=False, engine="h5netcdf") as pla:
+
+def append_indicators(experiment: Path, phase: str, beklas_path: Path, manifest: dict[str, object],
+                      zonal_old: xr.Dataset, sections_old: xr.Dataset,
+                      progress: Callable[[str], None] | None = None,
+                      found: tuple[list[Decade], list[dict[str, object]]] | None = None,
+                      ) -> tuple[xr.Dataset, xr.Dataset, dict[str, object]]:
+    """Add the decades after an existing product's last decade (same result as a full run).
+
+    The product's decades must be the first decades on disk, and the static
+    fields of the new decades (ocean fraction, wet areas and volumes) must
+    equal the stored ones; otherwise this raises and the run needs a full
+    recompute. The caller checks ``product_version``.
+    """
+    experiment = Path(experiment)
+    decades, left_out = found or find_decades(experiment, phase)
+    if not product_is_first_decades(manifest, decades):
+        raise ValueError(f"{experiment.name}: the product's decades are not the first decades on disk.")
+    new = decades[len(manifest["decades_used"]):]
+    if not new:
+        raise ValueError(f"{experiment.name}: no new decades to append.")
+
+    t21, lsg = _grids(new[0], beklas_path)
+    zonal_new, sections_new = _compute(new, t21, lsg, experiment.name, progress)
+    for old, added, names in ((zonal_old, zonal_new, ZONAL_STATIC), (sections_old, sections_new, SECTIONS_STATIC)):
+        for name in names:
+            if not np.allclose(old[name].values, added[name].values, rtol=1e-6, equal_nan=True):
+                raise ValueError(f"{experiment.name}: static field {name} differs from the stored product.")
+    zonal = xr.concat([zonal_old, zonal_new], dim="year", data_vars="minimal", coords="minimal",
+                      compat="override", join="exact")
+    sections = xr.concat([sections_old, sections_new], dim="year", data_vars="minimal", coords="minimal",
+                         compat="override", join="exact")
+    record = _record(experiment, phase, decades, left_out, zonal)
+    record["mode"], record["computed_from"] = "append", new[0].first
+    record["history"] = list(manifest.get("history", []))
+    return zonal, sections, record
+
+
+ZONAL_STATIC = ("t21_gaussian_weight", "t21_band_area", "t21_ocean_fraction", "lsg_row_wet_area")
+SECTIONS_STATIC = ("wet_volume", "wet_volume_atlantic")
+
+
+def product_is_first_decades(manifest: dict[str, object], decades: list[Decade]) -> bool:
+    """Whether the manifest's decades are exactly the first decades now on disk."""
+    used = [tuple(labels) for labels in manifest["decades_used"]]
+    return [(decade.first, decade.last) for decade in decades[:len(used)]] == used
+
+
+def _grids(decade: Decade, beklas_path: Path) -> tuple[T21Grid, LsgGrid]:
+    """Build the T21 and LSG geometry from the files of one decade (§2)."""
+    with xr.open_dataset(decade.paths["PLA"], decode_times=False, engine="h5netcdf") as pla:
         t21 = t21_grid_from_pla(pla)
-    with xr.open_dataset(decades[0].paths["LSG"], decode_times=False, engine="h5netcdf") as lsg_file:
+    with xr.open_dataset(decade.paths["LSG"], decode_times=False, engine="h5netcdf") as lsg_file:
         lsg = lsg_grid_from_lsg(lsg_file, beklas_path)
+    return t21, lsg
 
-    pieces: dict[str, list[np.ndarray]] = {name: [] for name in VARIABLES}
+
+def _compute(decades: list[Decade], t21: T21Grid, lsg: LsgGrid, name: str,
+             progress: Callable[[str], None] | None) -> tuple[xr.Dataset, xr.Dataset]:
+    """Compute the given decades, in order, into zonal and sections datasets."""
+    report = progress or (lambda message: None)
+    pieces: dict[str, list[np.ndarray]] = {variable: [] for variable in VARIABLES}
     for number, decade in enumerate(decades, start=1):
         arrays = decade_arrays(read_decade(decade), t21, lsg)
-        for name in VARIABLES:
-            pieces[name].append(arrays[name])
+        for variable in VARIABLES:
+            pieces[variable].append(arrays[variable])
         if number % 50 == 0 or number == len(decades):
-            report(f"{experiment.name}: {number}/{len(decades)} decades ({decade.last})")
+            report(f"{name}: {number}/{len(decades)} decades ({decade.last})")
 
     years = np.arange(decades[0].first, decades[-1].last + 1)
-    offset = decades[0].label_minus_model_year
-    values = {name: np.concatenate(parts).astype("float64" if name in FLOAT64_VARIABLES else "float32")
-              for name, parts in pieces.items()}
+    values = {variable: np.concatenate(parts).astype("float64" if variable in FLOAT64_VARIABLES else "float32")
+              for variable, parts in pieces.items()}
     if values["tas_zonal"].shape[0] != years.size:
         raise ValueError("Number of annual records differs from the label range.")
-    zonal, sections = _datasets(values, years, offset, t21, lsg)
+    return _datasets(values, years, decades[0].label_minus_model_year, t21, lsg)
+
+
+def _record(experiment: Path, phase: str, decades: list[Decade], left_out: list[dict[str, object]],
+            zonal: xr.Dataset) -> dict[str, object]:
+    """What a product was built from, and its run-level checks, for the manifest."""
     record = {
         "experiment": experiment.name,
         "phase": phase,
         "decades_used": [[decade.first, decade.last] for decade in decades],
         "left_out": left_out,
-        "label_minus_model_year": offset,
+        "label_minus_model_year": decades[0].label_minus_model_year,
         "checks": run_checks(zonal),
     }
     gsol0 = _gsol0(experiment)
     if gsol0 is not None:
         record["gsol0"] = gsol0
-    return zonal, sections, record
+    return record
 
 
 def _datasets(values: dict[str, np.ndarray], years: np.ndarray, offset: int,
@@ -438,7 +509,8 @@ def write_indicator_files(zonal: xr.Dataset, sections: xr.Dataset, record: dict[
     commit, modified = git_revision()
     created = datetime.now(timezone.utc).isoformat(timespec="seconds")
     provenance = {
-        "schema": SCHEMA, "experiment": record["experiment"], "phase": record["phase"],
+        "schema": SCHEMA, "product_version": PRODUCT_VERSION,
+        "experiment": record["experiment"], "phase": record["phase"],
         "first_label": record["decades_used"][0][0], "last_label": record["decades_used"][-1][1],
         "decades": len(record["decades_used"]), "label_minus_model_year": record["label_minus_model_year"],
         "git_commit": commit, "git_modified": int(modified), "command": command, "created": created,
@@ -458,13 +530,57 @@ def write_indicator_files(zonal: xr.Dataset, sections: xr.Dataset, record: dict[
         partial.replace(target)
         written.append(target)
 
+    # One history entry per full run or append, so products built by several commits say so.
+    history = list(record.get("history", []))
+    history.append({"mode": record["mode"], "first_label": record["computed_from"],
+                    "last_label": provenance["last_label"], "git_commit": commit, "git_modified": modified,
+                    "command": command, "created": created})
     manifest = provenance | {key: record[key] for key in ("decades_used", "left_out", "checks")}
+    manifest["history"] = history
     target = output_dir / f"{stem}_manifest.json"
     partial = output_dir / f"{stem}_manifest.json.partial"
     partial.write_text(json.dumps(manifest, indent=1) + "\n")
     partial.replace(target)
     written.append(target)
     return written
+
+
+def update_indicators(experiment: Path, phase: str, beklas_path: Path, output_dir: Path, command: str,
+                      full: bool = False, progress: Callable[[str], None] | None = None) -> dict[str, object]:
+    """Bring one run's product up to date and return a summary of what was done.
+
+    - New complete decades after an existing product with this code's
+      ``PRODUCT_VERSION``: append them (``append_indicators``).
+    - No product, another ``product_version``, decades that no longer match
+      the disk, or ``full``: recompute from the first decade (``run_indicators``).
+    - Nothing new: leave the files as they are.
+    """
+    experiment, output_dir = Path(experiment), Path(output_dir)
+    found = find_decades(experiment, phase)
+    decades = found[0]
+    manifest = read_manifest(output_dir, experiment.name, phase)
+    can_append = (not full and manifest is not None
+                  and manifest.get("product_version") == PRODUCT_VERSION
+                  and product_is_first_decades(manifest, decades))
+    summary: dict[str, object] = {"experiment": experiment.name, "phase": phase}
+
+    if can_append and len(manifest["decades_used"]) == len(decades):
+        return summary | {"mode": "up to date", "last_label": decades[-1].last}
+    if can_append:
+        stem = product_stem(experiment.name, phase)
+        zonal_old = load_indicators(output_dir / f"{stem}_zonal.nc")
+        sections_old = load_indicators(output_dir / f"{stem}_sections.nc")
+        zonal, sections, record = append_indicators(experiment, phase, beklas_path, manifest,
+                                                    zonal_old, sections_old, progress, found)
+    else:
+        zonal, sections, record = run_indicators(experiment, phase, beklas_path, progress, found)
+    written = write_indicator_files(zonal, sections, record, output_dir, command)
+    return summary | {
+        "mode": record["mode"], "computed_from": record["computed_from"],
+        "first_label": record["decades_used"][0][0], "last_label": record["decades_used"][-1][1],
+        "decades": len(record["decades_used"]), "left_out": record["left_out"],
+        "checks": record["checks"], "files": [str(path) for path in written],
+    }
 
 
 def read_manifest(output_dir: Path, experiment_name: str, phase: str) -> dict[str, object] | None:
