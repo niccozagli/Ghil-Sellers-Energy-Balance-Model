@@ -4,8 +4,8 @@ For each run label it lists output files whose time length differs from the
 year range in their name (or that cannot be opened), and the newest files in
 ``restart/spinup``. Run from the repository clone on a login node:
 
-    .venv/bin/python scripts/slurm/check_plasim_output.py 1231p5 1230p5_bis
-    .venv/bin/python scripts/slurm/check_plasim_output.py 1231p5 --all
+    .venv/bin/python scripts/slurm/check_plasim_output.py --experiments-root <experiments> 1231p5 1230p5_bis
+    .venv/bin/python scripts/slurm/check_plasim_output.py --experiments-root <experiments> 1231p5 --all
 """
 import argparse
 import re
@@ -18,7 +18,7 @@ BLOCK = re.compile(r"\.(\d+)-(\d+)\.nc$")
 
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 parser.add_argument("runs", nargs="+", help="Labels after _MU_, e.g. 1231p5 1235_cold.")
-parser.add_argument("--experiments-root", type=Path, default=Path("/home/n/nz68/plasim-workspace/experiments"))
+parser.add_argument("--experiments-root", type=Path, required=True, help="Directory of experiment folders.")
 parser.add_argument("--prefix", default="CONTROL_360ppm_T21L10_10000Y_MU_")
 parser.add_argument("--last-decades", type=int, default=60, help="Number of newest blocks to check.")
 parser.add_argument("--all", action="store_true", help="Check every block.")

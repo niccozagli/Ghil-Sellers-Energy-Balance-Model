@@ -166,8 +166,8 @@ ONLY="1232p5" scripts/slurm/submit_plasim_extraction.sh    # selected labels
 MU_MIN=1230 MU_MAX=1245 scripts/slurm/submit_plasim_extraction.sh
 ```
 
-`EXPERIMENTS_ROOT` defaults to `/home/n/nz68/plasim-workspace/experiments` and
-`OUTPUT_ROOT` to `/scratch/complexp/nz68/plasim-workspace/extracted`.
+`EXPERIMENTS_ROOT` and `OUTPUT_ROOT` default to the cluster workspace paths
+set in the submission script.
 The extraction task requests the `short` partition (1-day limit), with a
 3.5-hour job time limit.
 `WORKERS` (default 4) sets the reader processes, and `MAX_PARALLEL` (default 4)
@@ -185,7 +185,7 @@ local roots with, for example:
 
 ```bash
 rsync -av --include='*/' --include='*_spinup_*.nc' --exclude='*' \
-  <user>@<cluster>:/scratch/complexp/nz68/plasim-workspace/extracted/ \
+  <user>@<cluster>:<output root>/ \
   /Volumes/Nicco/Plasim/extracted/
 ```
 
