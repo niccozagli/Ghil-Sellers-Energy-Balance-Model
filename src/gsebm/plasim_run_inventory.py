@@ -185,6 +185,24 @@ def output_block(path: Path, first: int, last: int) -> dict[str, object]:
     return record
 
 
+def list_output_files(experiment: Path, phase: str) -> tuple[list[tuple[str, Path, int, int]], list[str]]:
+    """List the yearly-mean output files of one experiment and phase.
+
+    Returns ``(stream, path, label_first, label_last)`` for every file named
+    ``<experiment>_<stream>.<first>-<last>.nc`` in ``output/<phase>``, sorted
+    by name, and the names of the other entries of that folder.
+    """
+    experiment = Path(experiment)
+    files, unrecognised = [], []
+    for path in sorted((experiment / "output" / phase).glob("*")):
+        match = _OUTPUT.fullmatch(path.name)
+        if match is None or match.group(1) != experiment.name:
+            unrecognised.append(path.name)
+            continue
+        files.append((match.group(2), path, int(match.group(3)), int(match.group(4))))
+    return files, unrecognised
+
+
 def _ranges(years: list[int]) -> list[list[int]]:
     """Collapse sorted integers into inclusive ``[first, last]`` ranges."""
     ranges: list[list[int]] = []
@@ -354,14 +372,9 @@ def inventory_run(
 
     unrecognised: dict[str, list[str]] = {"output": [], "restart": [], "diag": []}
 
-    output_tasks, output_meta = [], []
-    for path in sorted((experiment / "output" / phase).glob("*")):
-        match = _OUTPUT.fullmatch(path.name)
-        if match is None or match.group(1) != name:
-            unrecognised["output"].append(path.name)
-            continue
-        output_tasks.append((path, int(match.group(3)), int(match.group(4))))
-        output_meta.append(match.group(2))
+    output_files, unrecognised["output"] = list_output_files(experiment, phase)
+    output_tasks = [(path, first, last) for _, path, first, last in output_files]
+    output_meta = [stream for stream, *_ in output_files]
     blocks = _read_or_reuse(output_block, output_tasks, lambda task: task[0], previous_outputs,
                             lambda row: {k: v for k, v in row.items() if k != "stream"},
                             workers, report, f"{name}: output blocks")
