@@ -107,6 +107,14 @@ def member_problems(inventory: dict[str, object], member: dict[str, object],
     return problems
 
 
+def same_value(a: str | None, b: str | None) -> bool:
+    """Whether two namelist values are equal, as numbers when both are (``1235`` = ``1235.0``)."""
+    try:
+        return float(a) == float(b)
+    except (TypeError, ValueError):
+        return a == b
+
+
 def namelist_differences(inventory: dict[str, object], reference: dict[str, object]) -> list[str]:
     """Namelist entries (``file:KEY``) whose values differ between two inventories.
 
@@ -120,6 +128,6 @@ def namelist_differences(inventory: dict[str, object], reference: dict[str, obje
         ours = inventory["namelists"][name]["values"]
         theirs = reference["namelists"][name]["values"]
         for key in sorted(set(ours) | set(theirs)):
-            if ours.get(key) != theirs.get(key):
+            if not same_value(ours.get(key), theirs.get(key)):
                 differences.append(f"{name}:{key}")
     return differences

@@ -86,6 +86,9 @@ class StepMemberTest(unittest.TestCase):
     def test_namelist_differences(self):
         member = member_inventory()
         self.assertEqual(namelist_differences(member, parent_inventory()), ["planet_namelist:GSOL0"])
+        # A control written as 1237.5 vs 1237.50, or 1235 vs 1235.0, is the same value.
+        control = member_inventory(gsol0="1237.50")
+        self.assertEqual(namelist_differences(control, parent_inventory()), [])
         member["namelists"]["plasim_namelist"]["values"]["N_RUN_YEARS"] = "1"
         member["namelists"]["extra_namelist"] = {"values": {}}
         self.assertEqual(namelist_differences(member, parent_inventory()),
