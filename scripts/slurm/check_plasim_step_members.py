@@ -8,8 +8,8 @@ prints one line per member:
 
 then the namelist entries that differ from the parent's run/ (only
 planet_namelist:GSOL0 should) and the executables found. The member list
-gives `# parent:` and `# base_mu:` in its header (see
-gsebm.plasim_step_members). Nothing is written.
+gives `# parent:` and `# base_mu:` in its header, or one parent per member in
+a fifth column (see gsebm.plasim_step_members). Nothing is written.
 
     PYTHONPATH=src python scripts/slurm/check_plasim_step_members.py \
         --inventory-root <member inventories> --parent-root <parent inventories> step_members_1235.txt
@@ -49,19 +49,23 @@ def main() -> int:
     args = parser.parse_args()
 
     header, members = read_member_list(args.member_list)
-    parent, base_mu = header["parent"], float(header["base_mu"])
-    found = latest_inventory(args.parent_root, parent, args.phase)
-    if found is None:
-        print(f"no inventory of the parent {parent} under {args.parent_root}")
-        return 1
-    parent_path, parent_inventory = found
-    print(f"== {args.member_list.name}: parent {parent} (inventory {parent_path.name}), base GSOL0 {base_mu}, "
-          f"{len(members)} members")
+    base_mu = float(header["base_mu"])
+    print(f"== {args.member_list.name}: parent {header['parent']}, base GSOL0 {base_mu}, {len(members)} members")
 
     failed = 0
     differences: Counter = Counter()
     executables: Counter = Counter()
+    parents: dict = {}
     for member in members:
+        parent = member.get("parent", header["parent"])
+        if parent not in parents:
+            found = latest_inventory(args.parent_root, parent, args.phase)
+            if found is None:
+                print(f"no inventory of the parent {parent} under {args.parent_root}")
+                return 1
+            print(f"parent {parent}: inventory {found[0].name}")
+            parents[parent] = found[1]
+        parent_inventory = parents[parent]
         name = member["experiment"]
         start = member["start_label"]
         line = (f"{member['index']:4d} {name} {role(member['gsol0'], base_mu):7s} "

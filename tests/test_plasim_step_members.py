@@ -50,6 +50,14 @@ class StepMemberTest(unittest.TestCase):
         self.assertEqual(members[1], {"index": 2, "experiment": "STEP_m2_from16999",
                                       "start_label": 16999, "gsol0": 1235.5})
 
+    def test_read_member_list_with_one_parent_per_member(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "members.txt"
+            path.write_text("# base_mu: 1232.25\n1 STEP_m0p25_from22009 22009 1232 SOURCE_from20009\n")
+            _, members = read_member_list(path)
+        self.assertEqual(members[0], {"index": 1, "experiment": "STEP_m0p25_from22009", "start_label": 22009,
+                                      "gsol0": 1232.0, "parent": "SOURCE_from20009"})
+
     def test_parent_restart_year(self):
         self.assertEqual(parent_restart_year(parent_inventory(), 16999), 16499)
         self.assertIsNone(parent_restart_year(parent_inventory(), 17999))

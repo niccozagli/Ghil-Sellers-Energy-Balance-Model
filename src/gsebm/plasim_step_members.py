@@ -4,7 +4,8 @@ A step ensemble is described by a plain member list (one line per member:
 ``idx experiment start_label GSOL0``, as read by ``setup_step_members.sh``)
 with two header comments, ``# parent: <experiment>`` and ``# base_mu: <GSOL0>``.
 Each member is a run started from the parent's restart bundle labelled
-``start_label`` with only ``GSOL0`` changed.
+``start_label`` with only ``GSOL0`` changed. A continuation ensemble has one
+parent per member instead, as a fifth column of the list.
 
 The checks read the JSON inventories written by
 ``scripts/slurm/inventory_plasim_runs.py`` (``plasim_run_inventory``): one
@@ -20,8 +21,9 @@ from pathlib import Path
 def read_member_list(path: Path) -> tuple[dict[str, str], list[dict[str, object]]]:
     """Return the header (``# key: value`` lines) and the members of a member list.
 
-    Each member is ``{"index", "experiment", "start_label", "gsol0"}``. Other
-    comment lines are ignored.
+    Each member is ``{"index", "experiment", "start_label", "gsol0"}``, with
+    ``"parent"`` as well when the line has a fifth column. Other comment lines
+    are ignored.
     """
     header: dict[str, str] = {}
     members: list[dict[str, object]] = []
@@ -34,9 +36,12 @@ def read_member_list(path: Path) -> tuple[dict[str, str], list[dict[str, object]
             if colon and " " not in key.strip():
                 header[key.strip()] = value.strip()
             continue
-        index, experiment, start_label, gsol0 = line.split()
-        members.append({"index": int(index), "experiment": experiment,
-                        "start_label": int(start_label), "gsol0": float(gsol0)})
+        index, experiment, start_label, gsol0, *parent = line.split()
+        member = {"index": int(index), "experiment": experiment,
+                  "start_label": int(start_label), "gsol0": float(gsol0)}
+        if parent:
+            member["parent"] = parent[0]
+        members.append(member)
     return header, members
 
 
