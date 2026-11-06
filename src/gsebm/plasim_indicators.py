@@ -784,13 +784,14 @@ def latitude_fields(zonal: xr.Dataset, sections: xr.Dataset) -> xr.Dataset:
 
 
 def product_phase(product_dir: Path) -> str:
-    """The phase of the product in a run's folder (``spinup`` or ``stationary``), from its zonal file's name."""
+    """The phase of the files in a run's folder (``spinup`` or ``stationary``), from the name of its zonal file
+    (on the cluster) or its series file (on the laptop, where only the reduced files are kept)."""
     product_dir = Path(product_dir)
     for phase in ("spinup", "stationary"):
         stem = product_stem(product_dir.name, phase)
-        if (product_dir / f"{stem}_zonal.nc").is_file():
+        if any((product_dir / f"{stem}_{kind}.nc").is_file() for kind in ("zonal", "series")):
             return phase
-    raise FileNotFoundError(f"no zonal file in {product_dir}")
+    raise FileNotFoundError(f"no zonal or series file in {product_dir}")
 
 
 def series_path(product_dir: Path, experiment_name: str, phase: str) -> Path:

@@ -32,6 +32,7 @@ from gsebm.plasim_indicators import (
     layer_transport,
     lsg_volume_section,
     overturning_streamfunction,
+    product_phase,
     product_stem,
     product_status,
     run_indicators,
@@ -243,6 +244,12 @@ class SeriesTests(unittest.TestCase):
             fields = load_indicators(paths[1])
         self.assertEqual(series.attrs["phase"], "stationary")
         self.assertEqual(fields.attrs["experiment"], EXP)
+        # On the laptop only the reduced files are kept: the phase is found from the series file alone.
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / EXP
+            folder.mkdir()
+            series_path(folder, EXP, "stationary").touch()
+            self.assertEqual(product_phase(folder), "stationary")
         self.assertEqual(series.attrs["experiment"], EXP)
         self.assertEqual((series.attrs["first_label"], series.attrs["last_label"]), (10, 11))
         self.assertEqual(series.attrs["source_product_version"], PRODUCT_VERSION)
