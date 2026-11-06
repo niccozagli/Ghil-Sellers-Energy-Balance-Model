@@ -273,6 +273,29 @@ Attributes give the product it was computed from (`source_product_version`,
 first and last label) and the code (`git_commit`). The file is rewritten in
 full each time, so rerun the script after the product changes.
 
+## 7. Experiment files
+
+For an experiment of many runs (a step ensemble, a continuation), the
+cluster reduces every member to selected observables and writes them into
+two files, so analyses copy these instead of every member's product.
+`scripts/slurm/collect_plasim_experiment.py <member list>` writes:
+
+- `<name>_series.nc`: the §6 variables of every member, dimensions
+  (`member`, `year`), `year` being years since the member's step (year 1 is
+  the first year after its start label);
+- `<name>_latitude.nc`: on the same (`member`, `year`), the zonal means
+  `tas` and `sic` (sea-ice fraction of the ocean) on `t21_lat`, and the ocean
+  temperature per depth band and LSG row (`t_0_700`, `t_700_2025`,
+  `t_2025_bottom`: Σ_k `t_section` × `wet_volume` / Σ_k `wet_volume` over the
+  band's levels) on `lsg_lat`.
+
+Members of different lengths are padded with NaN after their last year.
+Each member carries its run name (`experiment`), `start_label`, `gsol0`,
+`role` (plus, minus or control against the list's `base_mu`), `source`
+(the run it started from) and `years_run`. Responses and other analyses are
+computed from these files. Values are stored as 32-bit floats. To add an
+observable, add it in `gsebm.plasim_experiments` and collect again.
+
 ## References
 
 - Börner R, Mehling O, von Hardenberg J, Lucarini V (2026). Global stability
