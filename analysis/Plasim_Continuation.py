@@ -33,9 +33,11 @@ def _(mo):
     Time is in years since the 1233.75 step, so the arms start at 2000 and
     the control has its first 2000 years as well. Annual values, no smoothing,
     except the block means of the departure check, which are named there.
-    The indicators are read from each run's annual series file, computed on
-    JASMIN (`Plasim_Indicators.md` §6), in `data/Plasim/indicators_steps/`
-    and, for the parents, `data/Plasim/indicators/`.
+    The indicators are read from the experiment files collected on JASMIN
+    (`Plasim_Indicators.md` §7) in `data/Plasim/experiments/`: the
+    continuation (`step_members_1232p25_series.nc`) and the 1233.75 ensemble
+    (`step_members_1233p75_series.nc`, for the grey runs and the + members);
+    and from the parents' series files (§6) in `data/Plasim/indicators/`.
 
     **Two kinds of result, kept apart.** The first three sections are a
     *continuation exercise*: they follow the states of the three arms, which
@@ -50,7 +52,7 @@ def _(mo):
 @app.cell
 def _(get_data_dir, load_indicators, np, series_path):
     DATA = get_data_dir(create=False) / "Plasim"
-    STEPS = DATA / "indicators_steps"
+    EXPERIMENTS = DATA / "experiments"
     PREFIX = "CONTROL_360ppm_T21L10_10000Y_MU_"
     STARTS = list(range(20009, 26810, 400))  # step labels of the 18 source members
     ARMS = {"1232.25": "#555555", "1232": "#eb6834", "1231.75": "#2a78d6"}
@@ -72,33 +74,38 @@ def _(get_data_dir, load_indicators, np, series_path):
             return f"{PREFIX}1233p75_STEP_m1p5_from{start}"
         return f"{PREFIX}1232p25_STEP_{'m0p25' if arm == '1232' else 'm0p5'}_from{start + 2000}"
 
-    def read_series(run, root=STEPS):
-        """Label years and annual indicators of one run, from its series file in root/run."""
-        series = load_indicators(series_path(root / run, run, "spinup"))
-        return series["year"].values, {name: series[variable].values for name, variable in SERIES.items()}
+    continuation = load_indicators(EXPERIMENTS / "step_members_1232p25_series.nc")
+    ensemble = load_indicators(EXPERIMENTS / "step_members_1233p75_series.nc")
 
-    def indicators(run, root=STEPS):
-        """Annual indicators of one run."""
-        return read_series(run, root)[1]
+    def member_series(experiment_file, run):
+        """Annual indicators of one member of an experiment file, over the years it has run."""
+        found = np.flatnonzero(experiment_file["experiment"].values == run)
+        assert found.size == 1, f"{run} is not in {experiment_file.attrs.get('name')}: collect the experiment again"
+        row = experiment_file.isel(member=int(found[0]))
+        n = int(row["years_run"])
+        return {name: row[variable].values[:n].astype(float) for name, variable in SERIES.items()}
 
     def parent_mean(mu, first, last):
         """Time mean of a parent run over its agreed stationary window, in labels (DATA.md §4)."""
-        years, values = read_series(f"{PREFIX}{mu}", DATA / "indicators")
+        run = f"{PREFIX}{mu}"
+        series = load_indicators(series_path(DATA / "indicators" / run, run, "spinup"))
+        years = series["year"].values
         inside = (years >= first) & (years <= last)
         assert inside.sum() == last - first + 1, "parent series do not cover the window"
-        return {name: float(v[inside].mean()) for name, v in values.items()}
+        return {name: float(series[variable].values[inside].mean()) for name, variable in SERIES.items()}
 
-    def years_since_step(arm, length):
-        """Control: 1, 2, ...; the lowered arms start at 2001."""
-        return np.arange(1, length + 1) if arm == "1232.25" else np.arange(2001, 2001 + length)
-
-    # data[arm][start] = (years since the step, {indicator: annual values})
+    # data[arm][start] = (years since the 1233.75 step, {indicator: annual values}); the lowered arms start at 2001.
     data = {}
     for _arm in ARMS:
         data[_arm] = {}
         for _start in STARTS:
-            _values = indicators(run_name(_arm, _start))
-            data[_arm][_start] = (years_since_step(_arm, len(_values["ACC"])), _values)
+            if _arm == "1232.25":
+                _values = member_series(ensemble, run_name(_arm, _start))
+                _years = np.arange(1, len(_values["ACC"]) + 1)
+            else:
+                _values = member_series(continuation, run_name(_arm, _start))
+                _years = np.arange(2001, 2001 + len(_values["ACC"]))
+            data[_arm][_start] = (_years, _values)
 
     # Members have different lengths (a stage can stop some before others), so the last year differs.
     LAST_YEAR = max(int(years[-1]) for arm in data.values() for years, _ in arm.values())
@@ -115,7 +122,7 @@ def _(get_data_dir, load_indicators, np, series_path):
 
     # For the response of the grey runs: the + members of the same 1233.75 starts (GSOL0 1235.25, 2000 years) and
     # the parents around (agreed windows, DATA.md §4).
-    plus = {s: indicators(f"{PREFIX}1233p75_STEP_p1p5_from{s}") for s in STARTS}
+    plus = {s: member_series(ensemble, f"{PREFIX}1233p75_STEP_p1p5_from{s}") for s in STARTS}
     parents = {"1233.75": parent_mean("1233p75", 20000, 29999), "1232.5": parent_mean("1232p5", 21000, 29999)}
     return ARMS, LAST_YEAR, STARTS, UNITS, data, on_years, parents, plus
 
