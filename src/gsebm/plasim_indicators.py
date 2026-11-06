@@ -16,6 +16,11 @@ Cluster side (run by ``scripts/slurm/compute_plasim_indicators.py``):
 Laptop side: ``load_indicators``, ``area_mean``, ``area_total`` and
 ``volume_mean`` compute global, hemispheric and band indicators exactly from
 the stored zonal means and sections.
+
+Series: ``annual_series`` applies them to every year of a run, and
+``write_series_file`` (run on the cluster by
+``scripts/slurm/write_plasim_series.py``) stores the result next to the
+product, so analyses on the laptop need only that small file.
 """
 
 from __future__ import annotations
@@ -683,3 +688,92 @@ def volume_mean(section: xr.DataArray, sections: xr.Dataset, levels: slice | Non
         volume = volume.isel(lsg_level=levels)
     weight = volume.where(rows, 0.0)
     return section.weighted(weight.fillna(0.0)).mean(("lsg_level", "lsg_lat"))
+
+
+# ---------------------------------------------------------------------------
+# Annual series (Plasim_Indicators.md §6): the §4 indicators of every year,
+# written next to a run's product so only this small file has to be copied
+# ---------------------------------------------------------------------------
+
+SERIES_SCHEMA = "plasim-series/1"
+# Depth bands by level position (§4): 0-700 m, 700-2025 m, 2025 m to the bottom.
+DEPTH_BANDS = {"0_700": slice(0, 10), "700_2025": slice(10, 17), "2025_bottom": slice(17, 22)}
+
+
+def annual_series(zonal: xr.Dataset, sections: xr.Dataset) -> xr.Dataset:
+    """Annual global, hemispheric and depth-band indicators of one run (§6).
+
+    Computed from the run's zonal and sections files with ``area_mean``,
+    ``area_total`` and ``volume_mean``; each variable has its units and a
+    long name. The coordinates are the label years and the model years.
+    """
+    t, s = sections["t_section"], sections["s_section"]
+    lat = sections["lsg_lat"]
+    wet_area = zonal["lsg_row_wet_area"]
+    series = {
+        "tas_global": (area_mean(zonal["tas_zonal"], zonal), "K", "surface air temperature, global mean"),
+        "tas_nh": (area_mean(zonal["tas_zonal"], zonal, "nh"), "K", "surface air temperature, NH mean"),
+        "tas_sh": (area_mean(zonal["tas_zonal"], zonal, "sh"), "K", "surface air temperature, SH mean"),
+        "toa_net": (area_mean(zonal["rst_zonal"] + zonal["rlut_zonal"], zonal), "W m-2",
+                    "net top-of-atmosphere flux, positive into the climate system"),
+        "surface_net": (area_mean(zonal["surface_net_flux_zonal"], zonal), "W m-2", "net surface flux, global mean"),
+        "ice_area_nh": (area_total(zonal["sic_ocean_zonal"], zonal, "nh") / 1e12, "1e6 km2", "sea-ice area, NH"),
+        "ice_area_sh": (area_total(zonal["sic_ocean_zonal"], zonal, "sh") / 1e12, "1e6 km2", "sea-ice area, SH"),
+        "acc": (zonal["acc"], "Sv", "Antarctic Circumpolar Current transport"),
+        "amoc_46_66n": (sections["psi_atlantic"].where((lat >= 46) & (lat <= 66)).max(("lsg_level", "lsg_lat")),
+                        "Sv", "AMOC strength: maximum of the Atlantic overturning over all depths, 46-66 N"),
+        "sea_level": ((zonal["zeta_zonal"] * wet_area).sum("lsg_lat") / wet_area.sum(), "m", "global mean sea level"),
+        "t_deep_nh": (volume_mean(t, sections, DEPTH_BANDS["2025_bottom"], "nh"), "K",
+                      "ocean temperature, 2025 m to the bottom, NH"),
+        "t_deep_sh": (volume_mean(t, sections, DEPTH_BANDS["2025_bottom"], "sh"), "K",
+                      "ocean temperature, 2025 m to the bottom, SH"),
+        "s_atlantic_0_700": (volume_mean(sections["s_atlantic_section"], sections, DEPTH_BANDS["0_700"],
+                                         atlantic=True), "permil", "Atlantic salinity, 0-700 m"),
+    }
+    for band, levels in DEPTH_BANDS.items():
+        depths = band.replace("_", "-").replace("bottom", "the bottom")
+        series[f"t_{band}"] = (volume_mean(t, sections, levels), "K", f"ocean temperature, {depths} m, global")
+        series[f"s_{band}"] = (volume_mean(s, sections, levels), "permil", f"ocean salinity, {depths} m, global")
+
+    variables = {}
+    for name, (values, units, long_name) in series.items():
+        variables[name] = xr.DataArray(np.asarray(values.values, dtype=float), dims="year",
+                                       attrs={"units": units, "long_name": long_name})
+    coords = {"year": zonal["year"].values, "model_year": ("year", zonal["model_year"].values)}
+    return xr.Dataset(variables, coords=coords)
+
+
+def series_path(product_dir: Path, experiment_name: str, phase: str) -> Path:
+    """The series file of a run: ``<stem>_series.nc`` in its product folder."""
+    return Path(product_dir) / f"{product_stem(experiment_name, phase)}_series.nc"
+
+
+def write_series_file(product_dir: Path, phase: str, command: str) -> Path:
+    """Compute the annual series of the run whose product is in ``product_dir`` and write them there.
+
+    The file records the product it was made from (version, labels) and this
+    code's git commit. It is written to ``*.partial`` and then renamed.
+    """
+    product_dir = Path(product_dir)
+    stem = product_dir / product_stem(product_dir.name, phase)
+    zonal = load_indicators(stem.with_name(stem.name + "_zonal.nc"))
+    sections = load_indicators(stem.with_name(stem.name + "_sections.nc"))
+    series = annual_series(zonal, sections)
+    commit, modified = git_revision()
+    series.attrs = {
+        "schema": SERIES_SCHEMA, "experiment": product_dir.name, "phase": phase,
+        "source_product_version": zonal.attrs["product_version"],
+        "first_label": int(series["year"][0]), "last_label": int(series["year"][-1]),
+        "label_minus_model_year": zonal.attrs["label_minus_model_year"],
+        "git_commit": commit, "git_modified": int(modified), "command": command,
+        "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "definitions": "Plasim_Indicators.md §6",
+    }
+    if "gsol0" in zonal.attrs:
+        series.attrs["gsol0"] = zonal.attrs["gsol0"]
+    target = series_path(product_dir, product_dir.name, phase)
+    partial = target.with_name(target.name + ".partial")
+    series.to_netcdf(partial, engine="h5netcdf",
+                     encoding={name: {"zlib": True, "complevel": 4} for name in series.data_vars})
+    partial.replace(target)
+    return target

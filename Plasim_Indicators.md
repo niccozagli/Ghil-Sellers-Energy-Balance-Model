@@ -248,6 +248,31 @@ the zonal means is exact.
   absolute value over rows is reported (0.047 Sv in the sample decade). It
   tests the vector-point geometry.
 
+## 6. Annual series file
+
+`<run>_<phase>_indicators_series.nc`, written next to a run's zonal and
+sections files by `scripts/slurm/write_plasim_series.py`, holds the §4
+indicators for every year (dimension `year`, label years, with `model_year`).
+It is small (about 0.4 MB per 1000 years), so it is what analyses copy when
+they need only these indicators. Variables, each with `units` and
+`long_name`:
+
+- `tas_global`, `tas_nh`, `tas_sh`: area means of `tas_zonal` (K).
+- `toa_net` (net TOA flux, positive down) and `surface_net` (mean of
+  `surface_net_flux_zonal`), W m⁻².
+- `ice_area_nh`, `ice_area_sh`: sea-ice area, 10⁶ km².
+- `acc`: the stored ACC transport (Sv); `amoc_46_66n`: AMOC strength, the
+  maximum of `psi_atlantic` over all depths and the rows in 46–66 °N (Sv).
+- `sea_level`: global mean sea level (m).
+- `t_0_700`, `t_700_2025`, `t_2025_bottom` and `s_0_700`, `s_700_2025`,
+  `s_2025_bottom`: global ocean volume means of `t_section` (K) and
+  `s_section` (‰) over the depth bands; `t_deep_nh`, `t_deep_sh`: the deep
+  band over NH and SH rows; `s_atlantic_0_700`: Atlantic salinity, 0–700 m.
+
+Attributes give the product it was computed from (`source_product_version`,
+first and last label) and the code (`git_commit`). The file is rewritten in
+full each time, so rerun the script after the product changes.
+
 ## References
 
 - Börner R, Mehling O, von Hardenberg J, Lucarini V (2026). Global stability
