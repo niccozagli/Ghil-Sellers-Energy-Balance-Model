@@ -12,23 +12,10 @@ def _():
     import matplotlib.pyplot as plt
     import numpy as np
     from gsebm.paths import get_data_dir
-    from gsebm.plasim_indicators import (
-        area_mean, area_total, load_indicators, product_stem, read_manifest, volume_mean,
-    )
+    from gsebm.plasim_indicators import load_indicators, product_phase, series_path
 
     plt.rcParams.update({"font.size": 13, "axes.titlesize": 14, "axes.labelsize": 13})
-    return (
-        area_mean,
-        area_total,
-        get_data_dir,
-        load_indicators,
-        mo,
-        np,
-        plt,
-        product_stem,
-        read_manifest,
-        volume_mean,
-    )
+    return get_data_dir, load_indicators, mo, plt, product_phase, series_path
 
 
 @app.cell(hide_code=True)
@@ -40,8 +27,10 @@ def _(mo):
        by eye.
     2. **Phase diagram:** time-mean global `ts` of the runs against GSOL0.
 
-    Definitions are in `Plasim_Indicators.md` §4; the stationary windows and
-    the reasons for them in `PLASIM_INFO/DATA.md` §4 and
+    Each run is read from its series file in `data/Plasim/indicators/<run>/`,
+    written on JASMIN by `scripts/slurm/reduce_plasim_runs.py`. Definitions
+    are in `Plasim_Indicators.md` §4 and §6; the stationary windows and the
+    reasons for them in `PLASIM_INFO/DATA.md` §4 and
     `PLASIM_INFO/STATIONARITY.md`.
     """)
     return
@@ -66,31 +55,28 @@ def _(mo):
 
 
 @app.cell
-def _(get_data_dir, read_manifest):
+def _(get_data_dir, load_indicators, product_phase, series_path):
     INDICATOR_DIR = get_data_dir(create=False) / "Plasim" / "indicators"
 
     def short_name(run):
         """Run name without the common prefix: '1232p5_cold', or 'base'."""
         return run.split("_MU_")[1] if "_MU_" in run else "base"
 
-    def run_manifest(run_dir):
-        """Manifest of a run folder, whichever phase it holds."""
-        for phase in ("spinup", "stationary"):
-            manifest = read_manifest(run_dir, run_dir.name, phase)
-            if manifest is not None:
-                return manifest
-        raise FileNotFoundError(f"no indicator manifest in {run_dir}")
+    def read_series(run_dir):
+        """The series file of a run folder, whichever phase it holds."""
+        return load_indicators(series_path(run_dir, run_dir.name, product_phase(run_dir)))
 
-    manifests = {path.name: run_manifest(path) for path in INDICATOR_DIR.iterdir() if path.is_dir()}
-    manifests = dict(sorted(manifests.items(), key=lambda item: (item[1]["gsol0"], item[0])))
-    return INDICATOR_DIR, manifests, short_name
+    # Every run's series, ordered by GSOL0; the attributes hold GSOL0 and the phase.
+    all_series = {path.name: read_series(path) for path in INDICATOR_DIR.iterdir() if path.is_dir()}
+    all_series = dict(sorted(all_series.items(), key=lambda item: (item[1].attrs["gsol0"], item[0])))
+    return all_series, short_name
 
 
 @app.cell
-def _(manifests, mo, short_name):
+def _(all_series, mo, short_name):
     chosen = mo.ui.dropdown(
-        options={f"{short_name(run)}  (GSOL0 {manifest['gsol0']:g})": run
-                 for run, manifest in manifests.items()},
+        options={f"{short_name(run)}  (GSOL0 {series.attrs['gsol0']:g})": run
+                 for run, series in all_series.items()},
         value="1240  (GSOL0 1240)",
         label="run",
     )
@@ -99,21 +85,13 @@ def _(manifests, mo, short_name):
 
 
 @app.cell
-def _(INDICATOR_DIR, chosen, load_indicators, manifests, product_stem):
+def _(all_series, chosen):
     run = chosen.value
-    manifest = manifests[run]
-    _stem = product_stem(run, manifest["phase"])
-    zonal = load_indicators(INDICATOR_DIR / run / f"{_stem}_zonal.nc")
-    sections = load_indicators(INDICATOR_DIR / run / f"{_stem}_sections.nc")
-    first_year, last_year = int(zonal.model_year[0]), int(zonal.model_year[-1])
-
+    first_year, last_year = int(all_series[run].model_year[0]), int(all_series[run].model_year[-1])
     # Time axis of the plots: years since the run's first year of output
-    def _from_start(dataset):
-        run_year = dataset["model_year"].values - first_year
-        return dataset.assign_coords(run_year=("year", run_year)).swap_dims(year="run_year")
-
-    zonal, sections = _from_start(zonal), _from_start(sections)
-    return first_year, last_year, manifest, run, sections, zonal
+    series = all_series[run].assign_coords(
+        run_year=("year", all_series[run]["model_year"].values - first_year)).swap_dims(year="run_year")
+    return first_year, last_year, run, series
 
 
 @app.cell
@@ -128,10 +106,10 @@ def _(first_year, last_year, mo):
 
 
 @app.cell
-def _(first_year, last_year, manifest, mo, run, short_name, window, zonal):
-    _offset = int(zonal.year[0]) - first_year
+def _(first_year, last_year, mo, run, series, short_name, window):
+    _offset = int(series.year[0]) - first_year
     mo.md(
-        f"**{short_name(run)}**, GSOL0 {manifest['gsol0']:g} W m$^{{-2}}$, phase `{manifest['phase']}`: "
+        f"**{short_name(run)}**, GSOL0 {series.attrs['gsol0']:g} W m$^{{-2}}$, phase `{series.attrs['phase']}`: "
         f"model years {first_year}–{last_year} ({last_year - first_year + 1} years; labels "
         f"{first_year + _offset}–{last_year + _offset}). "
         f"Window: years {window.value[0]}–{window.value[1]} since the start "
@@ -183,16 +161,12 @@ def _(mo):
 
 
 @app.cell
-def _(area_mean, group_figure, zonal):
-    def _surface(region):
-        return [("tas", area_mean(zonal["tas_zonal"], zonal, region)),
-                ("ts", area_mean(zonal["ts_zonal"], zonal, region))]
-
+def _(group_figure, series):
     group_figure("Surface climate", [
-        ("global (K)", _surface("global")),
-        ("NH (K)", _surface("nh")),
-        ("SH (K)", _surface("sh")),
-        ("global sst (K)", [("sst", area_mean(zonal["sst_ocean_zonal"], zonal, ocean_only=True))]),
+        ("global (K)", [("tas", series["tas_global"]), ("ts", series["ts_global"])]),
+        ("NH (K)", [("tas", series["tas_nh"]), ("ts", series["ts_nh"])]),
+        ("SH (K)", [("tas", series["tas_sh"]), ("ts", series["ts_sh"])]),
+        ("global sst (K)", [("sst", series["sst_global"])]),
     ])
     return
 
@@ -212,15 +186,12 @@ def _(mo):
 
 
 @app.cell
-def _(area_mean, group_figure, zonal):
-    _incoming = area_mean(zonal["rst_zonal"] - zonal["rsut_zonal"], zonal)
-    _wet_area = zonal["lsg_row_wet_area"]
-    _flukhea = (zonal["flukhea_zonal"] * _wet_area).sum("lsg_lat") / _wet_area.sum()
+def _(group_figure, series):
     _fig = group_figure("Energy balance", [
-        ("net TOA (W m$^{-2}$)", [("N", area_mean(zonal["rst_zonal"] + zonal["rlut_zonal"], zonal))]),
-        ("surface net (W m$^{-2}$)", [("surface", area_mean(zonal["surface_net_flux_zonal"], zonal))]),
-        ("into LSG (W m$^{-2}$)", [("flukhea", _flukhea)]),
-        ("planetary albedo", [("albedo", -area_mean(zonal["rsut_zonal"], zonal) / _incoming)]),
+        ("net TOA (W m$^{-2}$)", [("N", series["toa_net"])]),
+        ("surface net (W m$^{-2}$)", [("surface", series["surface_net"])]),
+        ("into LSG (W m$^{-2}$)", [("flukhea", series["into_lsg"])]),
+        ("planetary albedo", [("albedo", series["planetary_albedo"])]),
     ])
     for _ax in _fig.axes[:3]:
         _ax.axhline(0.0, color="k", linestyle="--", linewidth=0.8)
@@ -241,29 +212,12 @@ def _(mo):
 
 
 @app.cell
-def _(area_total, group_figure, zonal):
+def _(group_figure, series):
     group_figure("Sea ice", [
-        ("area (10$^{6}$ km$^2$)", [
-            ("NH", area_total(zonal["sic_ocean_zonal"], zonal, "nh") / 1e12),
-            ("SH", area_total(zonal["sic_ocean_zonal"], zonal, "sh") / 1e12),
-        ]),
-        ("volume (10$^{3}$ km$^3$)", [
-            ("NH", area_total(zonal["sit_ocean_zonal"], zonal, "nh") / 1e12),
-            ("SH", area_total(zonal["sit_ocean_zonal"], zonal, "sh") / 1e12),
-        ]),
+        ("area (10$^{6}$ km$^2$)", [("NH", series["ice_area_nh"]), ("SH", series["ice_area_sh"])]),
+        ("volume (10$^{3}$ km$^3$)", [("NH", series["ice_volume_nh"]), ("SH", series["ice_volume_sh"])]),
     ])
     return
-
-
-@app.cell
-def _():
-    # Depth bands as whole LSG layers (Plasim_Indicators.md §4), by level position
-    BANDS = {
-        "0–700 m": slice(0, 10),
-        "700–2025 m": slice(10, 17),
-        "2025 m–bottom": slice(17, 22),
-    }
-    return (BANDS,)
 
 
 @app.cell(hide_code=True)
@@ -278,16 +232,12 @@ def _(mo):
 
 
 @app.cell
-def _(BANDS, group_figure, sections, volume_mean):
-    _t = sections["t_section"]
+def _(group_figure, series):
     group_figure("Ocean temperature", [
-        (f"{_band} (K)", [("global", volume_mean(_t, sections, _levels))])
-        for _band, _levels in BANDS.items()
-    ] + [
-        ("2025 m–bottom (K)", [
-            ("NH", volume_mean(_t, sections, BANDS["2025 m–bottom"], "nh")),
-            ("SH", volume_mean(_t, sections, BANDS["2025 m–bottom"], "sh")),
-        ]),
+        ("0–700 m (K)", [("global", series["t_0_700"])]),
+        ("700–2025 m (K)", [("global", series["t_700_2025"])]),
+        ("2025 m–bottom (K)", [("global", series["t_2025_bottom"])]),
+        ("2025 m–bottom (K)", [("NH", series["t_deep_nh"]), ("SH", series["t_deep_sh"])]),
     ])
     return
 
@@ -306,14 +256,13 @@ def _(mo):
 
 
 @app.cell
-def _(BANDS, group_figure, sections, volume_mean, zonal):
-    _s = sections["s_section"]
-    _wet_area = zonal["lsg_row_wet_area"]
+def _(group_figure, series):
     group_figure("Salt and sea level", [
-        *[(f"{_band} (‰)", [("global", volume_mean(_s, sections, _levels))]) for _band, _levels in BANDS.items()],
-        ("Atlantic 0–700 m (‰)", [("Atlantic", volume_mean(sections["s_atlantic_section"], sections,
-                                                          BANDS["0–700 m"], atlantic=True))]),
-        ("sea level (m)", [("zeta", (zonal["zeta_zonal"] * _wet_area).sum("lsg_lat") / _wet_area.sum())]),
+        ("0–700 m (‰)", [("global", series["s_0_700"])]),
+        ("700–2025 m (‰)", [("global", series["s_700_2025"])]),
+        ("2025 m–bottom (‰)", [("global", series["s_2025_bottom"])]),
+        ("Atlantic 0–700 m (‰)", [("Atlantic", series["s_atlantic_0_700"])]),
+        ("sea level (m)", [("zeta", series["sea_level"])]),
     ])
     return
 
@@ -332,16 +281,10 @@ def _(mo):
 
 
 @app.cell
-def _(group_figure, np, sections, zonal):
-    _psi = sections["psi_atlantic"]
-    _lat = sections["lsg_lat"]
-    _row_26 = int(np.argmin(np.abs(_lat.values - 26.0)))
+def _(group_figure, series):
     group_figure("Ocean circulation", [
-        ("AMOC (Sv)", [
-            ("46–66 °N", _psi.where((_lat >= 46) & (_lat <= 66)).max(("lsg_level", "lsg_lat"))),
-            (f"{float(_lat[_row_26]):.2f} °N", _psi.isel(lsg_lat=_row_26).max("lsg_level")),
-        ]),
-        ("ACC (Sv)", [("ACC", zonal["acc"])]),
+        ("AMOC (Sv)", [("46–66 °N", series["amoc_46_66n"]), ("near 26 °N", series["amoc_26n"])]),
+        ("ACC (Sv)", [("ACC", series["acc"])]),
     ])
     return
 
@@ -408,34 +351,23 @@ def _():
 
 
 @app.cell
-def _(
-    INDICATOR_DIR,
-    LAST_YEARS,
-    LEFT_OUT,
-    WINDOWS,
-    area_mean,
-    load_indicators,
-    manifests,
-    product_stem,
-    short_name,
-):
-    def time_means(run, manifest):
+def _(LAST_YEARS, LEFT_OUT, WINDOWS, all_series, short_name):
+    def time_means(run, series):
         """Window, and time-mean global tas and ts, of one run."""
-        zonal = load_indicators(INDICATOR_DIR / run / f"{product_stem(run, manifest['phase'])}_zonal.nc")
-        length = zonal.sizes["year"]
+        length = series.sizes["year"]
         stationary = short_name(run) in WINDOWS
         first, last = WINDOWS[short_name(run)] if stationary else (length - LAST_YEARS, length - 1)
-        window = zonal.isel(year=slice(first, last + 1))
+        window = series.isel(year=slice(first, last + 1))
         return {
             "run": short_name(run),
-            "GSOL0": float(manifest["gsol0"]),
+            "GSOL0": float(series.attrs["gsol0"]),
             "stationary": stationary,
             "window": f"{first}–{last}",
-            "tas": float(area_mean(window["tas_zonal"], window).mean()),
-            "ts": float(area_mean(window["ts_zonal"], window).mean()),
+            "tas": float(window["tas_global"].mean()),
+            "ts": float(window["ts_global"].mean()),
         }
 
-    means = {short_name(run): time_means(run, manifest) for run, manifest in manifests.items()
+    means = {short_name(run): time_means(run, series) for run, series in all_series.items()
              if short_name(run) not in LEFT_OUT}
     return (means,)
 
@@ -476,6 +408,11 @@ def _(BRANCHES, BRANCH_COLOURS, means, plt):
     _inset.grid(alpha=0.3)
     _ax.indicate_inset_zoom(_inset, edgecolor="0.5")
     _fig
+    return
+
+
+@app.cell
+def _():
     return
 
 

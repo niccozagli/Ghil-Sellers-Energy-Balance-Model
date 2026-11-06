@@ -4,10 +4,11 @@ Question: is a run stationary over the window [start, end of run], judged
 indicator by indicator? The working definition and its history are in
 PLASIM_INFO/STATIONARITY.md; this script only computes the numbers.
 
-Input: the run's indicator product in data/Plasim/indicators/<run>/ (zonal
-and sections files; definitions in Plasim_Indicators.md §4). Annual values,
-no smoothing or detrending beyond the linear fits named below. Time is in
-years since the run's first year of output.
+Input: the run's series file in data/Plasim/indicators/<run>/ (written on
+JASMIN by scripts/slurm/reduce_plasim_runs.py; definitions in
+Plasim_Indicators.md §4 and §6). Annual values, no smoothing or detrending
+beyond the linear fits named below. Time is in years since the run's first
+year of output.
 
 Method, per indicator, over the window of length L:
 - block slopes: the window is cut into consecutive blocks of B years
@@ -33,42 +34,24 @@ import argparse
 import numpy as np
 
 from gsebm.paths import get_data_dir
-from gsebm.plasim_indicators import area_mean, area_total, load_indicators, product_stem, volume_mean
+from gsebm.plasim_indicators import load_indicators, product_phase, series_path
 
-BANDS = {"0-700 m": slice(0, 10), "700-2025 m": slice(10, 17), "2025 m-bottom": slice(17, 22)}
+# Name in the output -> variable of the series file (Plasim_Indicators.md §6).
+SERIES = {
+    "tas global": "tas_global", "TOA net": "toa_net", "surface net": "surface_net",
+    "ice area NH": "ice_area_nh", "ice area SH": "ice_area_sh",
+    "T 0-700 m": "t_0_700", "T 700-2025 m": "t_700_2025", "T 2025 m-bottom": "t_2025_bottom",
+    "T deep NH": "t_deep_nh", "T deep SH": "t_deep_sh",
+    "S 0-700 m": "s_0_700", "S 700-2025 m": "s_700_2025", "S 2025 m-bottom": "s_2025_bottom",
+    "S Atlantic 0-700 m": "s_atlantic_0_700", "AMOC 46-66N": "amoc_46_66n", "ACC": "acc", "sea level": "sea_level",
+}
 
 
-def load_run(run: str):
-    """Zonal and sections products of a run (phase stationary for the base run)."""
-    phase = "spinup" if "_MU_" in run else "stationary"
+def indicators(run: str) -> dict[str, np.ndarray]:
+    """Annual global, hemispheric and depth-band indicators of a run, from its series file."""
     folder = get_data_dir(create=False) / "Plasim" / "indicators" / run
-    zonal = load_indicators(folder / f"{product_stem(run, phase)}_zonal.nc")
-    sections = load_indicators(folder / f"{product_stem(run, phase)}_sections.nc")
-    return zonal, sections
-
-
-def indicators(zonal, sections) -> dict[str, np.ndarray]:
-    """Annual global and hemispheric indicators of Plasim_Indicators.md §4."""
-    wet_area = zonal["lsg_row_wet_area"]
-    lat = sections["lsg_lat"]
-    t, s = sections["t_section"], sections["s_section"]
-    series = {
-        "tas global": area_mean(zonal["tas_zonal"], zonal),
-        "TOA net": area_mean(zonal["rst_zonal"] + zonal["rlut_zonal"], zonal),
-        "surface net": area_mean(zonal["surface_net_flux_zonal"], zonal),
-        "ice area NH": area_total(zonal["sic_ocean_zonal"], zonal, "nh") / 1e12,
-        "ice area SH": area_total(zonal["sic_ocean_zonal"], zonal, "sh") / 1e12,
-        **{f"T {band}": volume_mean(t, sections, levels) for band, levels in BANDS.items()},
-        "T deep NH": volume_mean(t, sections, BANDS["2025 m-bottom"], "nh"),
-        "T deep SH": volume_mean(t, sections, BANDS["2025 m-bottom"], "sh"),
-        **{f"S {band}": volume_mean(s, sections, levels) for band, levels in BANDS.items()},
-        "S Atlantic 0-700 m": volume_mean(sections["s_atlantic_section"], sections, BANDS["0-700 m"],
-                                          atlantic=True),
-        "AMOC 46-66N": sections["psi_atlantic"].where((lat >= 46) & (lat <= 66)).max(("lsg_level", "lsg_lat")),
-        "ACC": zonal["acc"],
-        "sea level": (zonal["zeta_zonal"] * wet_area).sum("lsg_lat") / wet_area.sum(),
-    }
-    return {name: np.asarray(values.values, dtype=float) for name, values in series.items()}
+    series = load_indicators(series_path(folder, run, product_phase(folder)))
+    return {name: np.asarray(series[variable].values, dtype=float) for name, variable in SERIES.items()}
 
 
 def linear_fit(x: np.ndarray) -> tuple[float, np.ndarray]:
@@ -129,7 +112,7 @@ def main() -> None:
                         help="block lengths in years")
     args = parser.parse_args()
 
-    series = indicators(*load_run(args.run))
+    series = indicators(args.run)
     length = len(next(iter(series.values())))
     print(f"{args.run}: window {args.start}-{length - 1} years since start ({length - args.start} years)")
     print("drift bound per 1000 yr | block slopes: mean per 1000 yr, t over blocks, positive slopes / blocks")

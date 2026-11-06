@@ -8,27 +8,14 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
-    import re
-
     import marimo as mo
     import matplotlib.pyplot as plt
     import numpy as np
     from gsebm.paths import get_data_dir
-    from gsebm.plasim_indicators import area_mean, area_total, load_indicators, product_stem, volume_mean
+    from gsebm.plasim_indicators import latitude_path, load_indicators, series_path
 
     plt.rcParams.update({"font.size": 13, "axes.titlesize": 14, "axes.labelsize": 13})
-    return (
-        area_mean,
-        area_total,
-        get_data_dir,
-        load_indicators,
-        mo,
-        np,
-        plt,
-        product_stem,
-        re,
-        volume_mean,
-    )
+    return get_data_dir, latitude_path, load_indicators, mo, np, plt, series_path
 
 
 @app.cell(hide_code=True)
@@ -50,24 +37,16 @@ def _(mo):
     Each figure shows the mean over the starts that reach year t (line) and
     every start (light lines). Fewer starts reach the later years; the
     number is written where it changes. Annual values, no smoothing.
-    Indicators as in `Plasim_Indicators.md` §4 and `stationarity_tests.py`.
+
+    Data: the experiment files collected on JASMIN (`Plasim_Indicators.md`
+    §7) in `data/Plasim/experiments/`, one per ensemble, and the parents'
+    series and latitude files (§6) in `data/Plasim/indicators/`.
     """)
     return
 
 
 @app.cell
-def _(
-    area_mean,
-    area_total,
-    get_data_dir,
-    load_indicators,
-    np,
-    plt,
-    product_stem,
-    re,
-    volume_mean,
-):
-    BANDS = {"0-700 m": slice(0, 10), "700-2025 m": slice(10, 17), "2025 m-bottom": slice(17, 22)}
+def _(get_data_dir, load_indicators, np, plt, series_path):
     PANELS = {
         "tas global": "K",
         "ice area SH": "10$^6$ km$^2$",
@@ -78,6 +57,9 @@ def _(
     # The panels of each figure: surface and ocean.
     SURFACE = ["tas global", "ice area SH"]
     OCEAN = ["T 0-700 m", "T 700-2025 m", "T 2025 m-bottom"]
+    # Panel -> variable of the series files (Plasim_Indicators.md §6).
+    VARIABLES = {"tas global": "tas_global", "ice area SH": "ice_area_sh", "T 0-700 m": "t_0_700",
+                 "T 700-2025 m": "t_700_2025", "T 2025 m-bottom": "t_2025_bottom"}
     # Agreed stationary windows of the parents, in labels (DATA.md §4, 2026-10-28).
     WINDOWS = {
         "1245": (7500, 14999),
@@ -89,44 +71,49 @@ def _(
         "1232p5": (21000, 29999),
     }
     DATA = get_data_dir(create=False) / "Plasim"
-    STEPS = DATA / "indicators_steps"
-    MEMBER = re.compile(
-        r"CONTROL_360ppm_T21L10_10000Y_MU_(?P<mu>[0-9p]+)_STEP_(?P<sign>[pm])(?P<delta>[0-9p]+)_from(?P<start>\d+)")
+    EXPERIMENTS = DATA / "experiments"
+    PREFIX = "CONTROL_360ppm_T21L10_10000Y_MU_"
+    # The experiment file of each ensemble (collect_plasim_experiment.py; 1237.5 collected with --name).
+    ENSEMBLE_NAMES = {"1245": "step_members_1245", "1240": "step_members_1240", "1237p5": "step_members_1237p5",
+                      "1235": "step_members_1235", "1233p75": "step_members_1233p75"}
 
     def number(text):
         """1233p75 -> 1233.75 (the 'p' in run names is a decimal point)."""
         return float(text.replace("p", "."))
 
+    # The series of every member of each ensemble whose experiment file is on the laptop.
+    ensemble_series = {mu: load_indicators(EXPERIMENTS / f"{name}_series.nc") for mu, name in ENSEMBLE_NAMES.items()
+                       if (EXPERIMENTS / f"{name}_series.nc").is_file()}
+
     def find_members(mu):
-        """Step members of the ensemble at mu: {(delta, start label): {"p": plus run, "m": minus run}}."""
+        """Step members of the ensemble at mu: {(delta, start label): {"p": plus member, "m": minus member}},
+        members given by their index in the experiment file; control members are left out."""
+        series = ensemble_series[mu]
+        base_mu = float(series.attrs["base_mu"])
         members = {}
-        for folder in sorted(STEPS.iterdir()):
-            match = MEMBER.fullmatch(folder.name)
-            if match is None or match["mu"] != mu:
+        for k in range(series.sizes["member"]):
+            role = str(series["role"].values[k])
+            if role == "control":
                 continue
-            members.setdefault((number(match["delta"]), int(match["start"])), {})[match["sign"]] = folder.name
+            delta = round(abs(float(series["gsol0"].values[k]) - base_mu), 4)
+            members.setdefault((delta, int(series["start_label"].values[k])), {})[role[0]] = k
         return members
 
-    def indicators(folder):
-        """Label years and the annual indicators of the run whose products are in folder."""
-        stem = folder / product_stem(folder.name, "spinup")
-        zonal = load_indicators(stem.with_name(stem.name + "_zonal.nc"))
-        sections = load_indicators(stem.with_name(stem.name + "_sections.nc"))
-        t = sections["t_section"]
-        series = {
-            "tas global": area_mean(zonal["tas_zonal"], zonal),
-            "ice area SH": area_total(zonal["sic_ocean_zonal"], zonal, "sh") / 1e12,
-            **{f"T {band}": volume_mean(t, sections, levels) for band, levels in BANDS.items()},
-        }
-        return zonal["year"].values, {name: np.asarray(v.values, dtype=float) for name, v in series.items()}
+    def member_values(mu, k):
+        """Annual panels of member k of the ensemble at mu over the years it has run (index 0 = year 1)."""
+        row = ensemble_series[mu].isel(member=k)
+        years_run = int(row["years_run"])
+        return {name: row[variable].values[:years_run].astype(float) for name, variable in VARIABLES.items()}
 
     def stationary_mean(mu):
-        """<x0>: time mean of the parent over its agreed stationary window."""
+        """<x0>: time mean of the parent over its agreed stationary window, from its series file."""
         first, last = WINDOWS[mu]
-        years, series = indicators(DATA / "indicators" / f"CONTROL_360ppm_T21L10_10000Y_MU_{mu}")
+        run = f"{PREFIX}{mu}"
+        series = load_indicators(series_path(DATA / "indicators" / run, run, "spinup"))
+        years = series["year"].values
         inside = (years >= first) & (years <= last)
-        assert inside.sum() == last - first + 1, "parent product does not cover the window"
-        return {name: float(values[inside].mean()) for name, values in series.items()}
+        assert inside.sum() == last - first + 1, "parent series do not cover the window"
+        return {name: float(series[variable].values[inside].mean()) for name, variable in VARIABLES.items()}
 
     def pad(rows):
         """Stack rows of different lengths into (start, year since step, ...), padding with NaN."""
@@ -135,18 +122,17 @@ def _(
             array[i, :len(row)] = row
         return array
 
-    def responses(starts, delta, x0):
+    def responses(mu, starts, delta, x0):
         """R1_s(t) and R2_s(t) for every start and panel, as arrays (start, year since step)."""
         linear = {name: [] for name in PANELS}
         quadratic = {name: [] for name in PANELS}
         for start, pair in sorted(starts.items()):
-            years_plus, plus = indicators(STEPS / pair["p"])
-            years_minus, minus = indicators(STEPS / pair["m"])
-            # Both members of a start run over the same labels; use the years they share.
-            last = min(years_plus[-1], years_minus[-1])
+            plus, minus = member_values(mu, pair["p"]), member_values(mu, pair["m"])
+            # Both members are aligned by years since the step; use the years they share.
+            shared = min(len(plus["tas global"]), len(minus["tas global"]))
             for name in PANELS:
-                x_plus = plus[name][years_plus <= last]
-                x_minus = minus[name][years_minus <= last]
+                x_plus = plus[name][:shared]
+                x_minus = minus[name][:shared]
                 linear[name].append((x_minus - x_plus) / (2 * delta))
                 quadratic[name].append((x_plus + x_minus - 2 * x0[name]) / delta**2)
         return ({name: pad(rows) for name, rows in linear.items()},
@@ -177,14 +163,14 @@ def _(
         fig.tight_layout()
         return fig
 
-    ensembles = sorted({m["mu"] for f in STEPS.iterdir() if (m := MEMBER.fullmatch(f.name))} & set(WINDOWS),
-                       key=number)
+    ensembles = sorted(ensemble_series, key=number)
     return (
-        BANDS,
         DATA,
+        ENSEMBLE_NAMES,
+        EXPERIMENTS,
         OCEAN,
         PANELS,
-        STEPS,
+        PREFIX,
         SURFACE,
         WINDOWS,
         ensembles,
@@ -230,7 +216,7 @@ def _(
     # A start is used when both its plus and its minus member with this delta exist.
     starts = {start: pair for (d, start), pair in members.items() if d == delta and "p" in pair and "m" in pair}
     x0 = stationary_mean(mu)
-    linear, quadratic = responses(starts, delta, x0)
+    linear, quadratic = responses(mu, starts, delta, x0)
 
     _count = np.sum(~np.isnan(linear["tas global"]), axis=0)
     _reach = ", ".join(f"{n} up to year {np.flatnonzero(_count == n).max() + 1}" for n in sorted(set(_count), reverse=True))
@@ -307,8 +293,8 @@ def _(mo):
     mo.md(r"""
     ## Comparison between μ
 
-    Linear response R₁ of every ensemble whose files are all on the laptop,
-    one colour per μ: mean over starts (line) and each start (faint). Where
+    Linear response R₁ of every ensemble whose experiment file is on the
+    laptop, one colour per μ: mean over starts (line) and each start (faint). Where
     an ensemble has two step sizes (1237.5), the smaller δ is dashed. The
     number of starts drops with time differently in each ensemble (see the
     legend). Two time ranges: the first 300 years with every ensemble, and
@@ -319,39 +305,18 @@ def _(mo):
 
 
 @app.cell
-def _(
-    STEPS,
-    ensembles,
-    find_members,
-    mo,
-    number,
-    product_stem,
-    responses,
-    stationary_mean,
-):
-    def is_complete(mu):
-        """Whether every step member of mu has both its zonal and its sections file on the laptop."""
-        for pair in find_members(mu).values():
-            for run in pair.values():
-                stem = product_stem(run, "spinup")
-                if not all((STEPS / run / f"{stem}_{kind}.nc").is_file() for kind in ("zonal", "sections")):
-                    return False
-        return True
-
-    # Checked once, so the plotted and the left-out lists agree while a download is still running.
-    _complete = [mu for mu in ensembles if is_complete(mu)]
-
-    # Linear response of every complete ensemble and step size: {(mu, delta): {panel: (start, year)}}
+def _(ENSEMBLE_NAMES, ensembles, find_members, mo, number, responses, stationary_mean):
+    # Linear response of every ensemble and step size: {(mu, delta): {panel: (start, year)}}
     compared = {}
-    for _mu in _complete:
+    for _mu in ensembles:
         _members = find_members(_mu)
         _x0 = stationary_mean(_mu)
         for _delta in sorted({d for d, _ in _members}):
             _starts = {s: p for (d, s), p in _members.items() if d == _delta and "p" in p and "m" in p}
-            compared[(_mu, _delta)] = responses(_starts, _delta, _x0)[0]
+            compared[(_mu, _delta)] = responses(_mu, _starts, _delta, _x0)[0]
 
-    _skipped = [f"{number(mu):g}" for mu in ensembles if mu not in _complete]
-    mo.md("Not complete on the laptop yet, left out: " + (", ".join(_skipped) if _skipped else "none") + ".")
+    _skipped = [f"{number(mu):g}" for mu in ENSEMBLE_NAMES if mu not in ensembles]
+    mo.md("No experiment file on the laptop, left out: " + (", ".join(_skipped) if _skipped else "none") + ".")
     return (compared,)
 
 
@@ -466,62 +431,59 @@ def _(mo):
 
 
 @app.cell
-def _(BANDS, DATA, STEPS, WINDOWS, compared, find_members, load_indicators, np, pad, product_stem):
+def _(
+    DATA,
+    ENSEMBLE_NAMES,
+    EXPERIMENTS,
+    PREFIX,
+    WINDOWS,
+    ensembles,
+    find_members,
+    latitude_path,
+    load_indicators,
+    np,
+    pad,
+):
     # One step size per ensemble: the one with the longest runs.
     LATITUDE_DELTA = {"1245": 2.0, "1240": 2.0, "1237p5": 1.0, "1235": 2.0, "1233p75": 1.5}
     FIELD_UNITS = {"tas": "K", "sea ice": "fraction", "T 0-700 m": "K", "T 2025 m-bottom": "K"}
+    # Field -> variable of the latitude files (Plasim_Indicators.md §6-7).
+    FIELD_VARIABLES = {"tas": "tas", "sea ice": "sic", "T 0-700 m": "t_0_700", "T 2025 m-bottom": "t_2025_bottom"}
 
-    def band_by_latitude(sections, levels):
-        """Volume mean of the ocean temperature over the levels, per LSG row (NaN where a row has no water)."""
-        t = sections["t_section"].isel(lsg_level=levels)
-        volume = sections["wet_volume"].isel(lsg_level=levels)
-        total = volume.sum("lsg_level")
-        return (t * volume).sum("lsg_level") / total.where(total > 0)
-
-    def latitude_fields(folder):
-        """Label years, annual fields (year, latitude) and their latitudes for the run whose products are in folder."""
-        stem = folder / product_stem(folder.name, "spinup")
-        zonal = load_indicators(stem.with_name(stem.name + "_zonal.nc"))
-        sections = load_indicators(stem.with_name(stem.name + "_sections.nc"))
-        fields = {
-            "tas": zonal["tas_zonal"],
-            "sea ice": zonal["sic_ocean_zonal"],
-            "T 0-700 m": band_by_latitude(sections, BANDS["0-700 m"]),
-            "T 2025 m-bottom": band_by_latitude(sections, BANDS["2025 m-bottom"]),
-        }
-        grid = {name: (zonal["t21_lat"].values if name in ("tas", "sea ice") else sections["lsg_lat"].values)
-                for name in fields}
-        return zonal["year"].values, {name: field.values for name, field in fields.items()}, grid
+    ensemble_fields = {mu: load_indicators(EXPERIMENTS / f"{ENSEMBLE_NAMES[mu]}_latitude.nc") for mu in ensembles}
 
     def parent_by_latitude(mu):
-        """Time mean of the parent over its agreed stationary window, per latitude."""
+        """Time mean of the parent over its agreed stationary window, per latitude, from its latitude file."""
         first, last = WINDOWS[mu]
-        years, fields, _ = latitude_fields(DATA / "indicators" / f"CONTROL_360ppm_T21L10_10000Y_MU_{mu}")
+        run = f"{PREFIX}{mu}"
+        fields = load_indicators(latitude_path(DATA / "indicators" / run, run, "spinup"))
+        years = fields["year"].values
         inside = (years >= first) & (years <= last)
-        assert inside.sum() == last - first + 1, "parent product does not cover the window"
-        return {name: np.nanmean(field[inside], axis=0) for name, field in fields.items()}
+        assert inside.sum() == last - first + 1, "parent latitude file does not cover the window"
+        return {name: np.nanmean(fields[variable].values[inside], axis=0) for name, variable in FIELD_VARIABLES.items()}
 
     def one_sided_responses(mu, delta, x0):
         """Cooling (x_- - <x0>)/delta and warming (<x0> - x_+)/delta of every start, each {field: (start, year, latitude)}.
         Their mean is the centred response."""
+        fields = ensemble_fields[mu]
         cooling, warming = {name: [] for name in FIELD_UNITS}, {name: [] for name in FIELD_UNITS}
         starts = {s: p for (d, s), p in find_members(mu).items() if d == delta and "p" in p and "m" in p}
         for _start, pair in sorted(starts.items()):
-            _, plus, _ = latitude_fields(STEPS / pair["p"])
-            _, minus, _ = latitude_fields(STEPS / pair["m"])
-            for name in FIELD_UNITS:
-                last = min(len(plus[name]), len(minus[name]))
-                cooling[name].append(((minus[name][:last] - x0[name]) / delta).astype(np.float32))
-                warming[name].append(((x0[name] - plus[name][:last]) / delta).astype(np.float32))
+            plus, minus = fields.isel(member=pair["p"]), fields.isel(member=pair["m"])
+            # Aligned by years since the step; use the years both members have run.
+            shared = min(int(plus["years_run"]), int(minus["years_run"]))
+            for name, variable in FIELD_VARIABLES.items():
+                cooling[name].append(((minus[variable].values[:shared] - x0[name]) / delta).astype(np.float32))
+                warming[name].append(((x0[name] - plus[variable].values[:shared]) / delta).astype(np.float32))
         return ({name: pad(rows) for name, rows in cooling.items()},
                 {name: pad(rows) for name, rows in warming.items()})
 
-    # Only the ensembles complete on the laptop (see the comparison above).
-    _available = {mu for mu, _ in compared}
     parents = {mu: parent_by_latitude(mu) for mu in WINDOWS}
     one_sided = {mu: one_sided_responses(mu, delta, parents[mu])
-                 for mu, delta in LATITUDE_DELTA.items() if mu in _available}
-    _, _, latitudes = latitude_fields(DATA / "indicators" / "CONTROL_360ppm_T21L10_10000Y_MU_1240")
+                 for mu, delta in LATITUDE_DELTA.items() if mu in ensembles}
+    _any = next(iter(ensemble_fields.values()))
+    latitudes = {name: (_any["t21_lat"].values if variable in ("tas", "sic") else _any["lsg_lat"].values)
+                 for name, variable in FIELD_VARIABLES.items()}
     return FIELD_UNITS, LATITUDE_DELTA, latitudes, one_sided, parents
 
 
