@@ -248,29 +248,40 @@ the zonal means is exact.
   absolute value over rows is reported (0.047 Sv in the sample decade). It
   tests the vector-point geometry.
 
-## 6. Annual series file
+## 6. Reduced files of a single run
 
-`<run>_<phase>_indicators_series.nc`, written next to a run's zonal and
-sections files by `scripts/slurm/write_plasim_series.py`, holds the §4
-indicators for every year (dimension `year`, label years, with `model_year`).
-It is small (about 0.4 MB per 1000 years), so it is what analyses copy when
-they need only these indicators. Variables, each with `units` and
-`long_name`:
+`scripts/slurm/reduce_plasim_runs.py` writes two files next to a run's zonal
+and sections files (dimension `year`, label years, with `model_year`). They
+are small, so they are what analyses copy.
 
-- `tas_global`, `tas_nh`, `tas_sh`: area means of `tas_zonal` (K).
-- `toa_net` (net TOA flux, positive down) and `surface_net` (mean of
-  `surface_net_flux_zonal`), W m⁻².
-- `ice_area_nh`, `ice_area_sh`: sea-ice area, 10⁶ km².
+`<run>_<phase>_indicators_series.nc` holds the §4 indicators for every year
+(about 0.4 MB per 1000 years). Variables, each with `units` and `long_name`:
+
+- `tas_global`, `tas_nh`, `tas_sh` and `ts_global`, `ts_nh`, `ts_sh`: area
+  means of `tas_zonal` and `ts_zonal` (K); `sst_global`: ocean-only mean of
+  `sst_ocean_zonal` (K).
+- `toa_net` (net TOA flux, positive down), `surface_net` (mean of
+  `surface_net_flux_zonal`) and `into_lsg` (`flukhea` over LSG's wet
+  surface), W m⁻²; `planetary_albedo`.
+- `ice_area_nh`, `ice_area_sh`: sea-ice area, 10⁶ km²; `ice_volume_nh`,
+  `ice_volume_sh`: the same with `sit`, 10³ km³.
 - `acc`: the stored ACC transport (Sv); `amoc_46_66n`: AMOC strength, the
-  maximum of `psi_atlantic` over all depths and the rows in 46–66 °N (Sv).
+  maximum of `psi_atlantic` over all depths and the rows in 46–66 °N;
+  `amoc_26n`: its maximum over depth at the row nearest 26 °N (Sv).
 - `sea_level`: global mean sea level (m).
 - `t_0_700`, `t_700_2025`, `t_2025_bottom` and `s_0_700`, `s_700_2025`,
   `s_2025_bottom`: global ocean volume means of `t_section` (K) and
   `s_section` (‰) over the depth bands; `t_deep_nh`, `t_deep_sh`: the deep
   band over NH and SH rows; `s_atlantic_0_700`: Atlantic salinity, 0–700 m.
 
-Attributes give the product it was computed from (`source_product_version`,
-first and last label) and the code (`git_commit`). The file is rewritten in
+`<run>_<phase>_indicators_latitude.nc` holds, on `t21_lat`, the zonal means
+`tas` and `sic` (sea-ice fraction of the ocean), and on `lsg_lat` the ocean
+temperature per depth band and row (`t_0_700`, `t_700_2025`,
+`t_2025_bottom`: Σ_k `t_section` × `wet_volume` / Σ_k `wet_volume` over the
+band's levels).
+
+Attributes give the product they were computed from (`source_product_version`,
+first and last label) and the code (`git_commit`). The files are rewritten in
 full each time, so rerun the script after the product changes.
 
 ## 7. Experiment files
@@ -283,11 +294,8 @@ two files, so analyses copy these instead of every member's product.
 - `<name>_series.nc`: the §6 variables of every member, dimensions
   (`member`, `year`), `year` being years since the member's step (year 1 is
   the first year after its start label);
-- `<name>_latitude.nc`: on the same (`member`, `year`), the zonal means
-  `tas` and `sic` (sea-ice fraction of the ocean) on `t21_lat`, and the ocean
-  temperature per depth band and LSG row (`t_0_700`, `t_700_2025`,
-  `t_2025_bottom`: Σ_k `t_section` × `wet_volume` / Σ_k `wet_volume` over the
-  band's levels) on `lsg_lat`.
+- `<name>_latitude.nc`: the §6 latitude fields of every member, on the same
+  (`member`, `year`).
 
 Members of different lengths are padded with NaN after their last year.
 Each member carries its run name (`experiment`), `start_label`, `gsol0`,

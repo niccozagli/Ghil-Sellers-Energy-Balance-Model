@@ -8,9 +8,9 @@ step (year 1 is the first year after its start label):
 
 - the annual series of ``annual_series`` (global, hemispheric and depth-band
   indicators), as (member, year);
-- a few fields by latitude, as (member, year, latitude): surface air
-  temperature and sea-ice fraction on the T21 rows, and ocean temperature in
-  the three depth bands on the LSG rows (``band_by_latitude``).
+- the fields by latitude of ``latitude_fields``, as (member, year,
+  latitude): surface air temperature and sea-ice fraction on the T21 rows,
+  and ocean temperature in the three depth bands on the LSG rows.
 
 ``write_experiment_files`` stores them as ``<name>_series.nc`` and
 ``<name>_latitude.nc``. Responses and every other analysis are computed from
@@ -26,30 +26,9 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from gsebm.plasim_indicators import DEPTH_BANDS, annual_series, git_revision, load_indicators, product_stem
+from gsebm.plasim_indicators import annual_series, git_revision, latitude_fields, load_indicators, product_stem
 
 EXPERIMENT_SCHEMA = "plasim-experiment/1"
-
-
-def band_by_latitude(sections: xr.Dataset, levels: slice) -> xr.DataArray:
-    """Volume mean of the ocean temperature over a depth band, per LSG row (NaN where a row has no water)."""
-    t = sections["t_section"].isel(lsg_level=levels)
-    volume = sections["wet_volume"].isel(lsg_level=levels)
-    total = volume.sum("lsg_level")
-    return (t * volume).sum("lsg_level") / total.where(total > 0)
-
-
-def latitude_fields(zonal: xr.Dataset, sections: xr.Dataset) -> xr.Dataset:
-    """Annual fields by latitude of one run: tas and sea-ice fraction (T21 rows), ocean temperature per band (LSG rows)."""
-    fields = {
-        "tas": (zonal["tas_zonal"], "K", "surface air temperature, zonal mean"),
-        "sic": (zonal["sic_ocean_zonal"], "1", "sea-ice fraction of the ocean, zonal mean"),
-    }
-    for band, levels in DEPTH_BANDS.items():
-        depths = band.replace("_", "-").replace("bottom", "the bottom")
-        fields[f"t_{band}"] = (band_by_latitude(sections, levels), "K", f"ocean temperature, {depths} m, row mean")
-    return xr.Dataset({name: values.assign_attrs(units=units, long_name=long_name)
-                       for name, (values, units, long_name) in fields.items()})
 
 
 def member_role(gsol0: float, base_mu: float) -> str:

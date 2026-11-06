@@ -17,10 +17,12 @@ Laptop side: ``load_indicators``, ``area_mean``, ``area_total`` and
 ``volume_mean`` compute global, hemispheric and band indicators exactly from
 the stored zonal means and sections.
 
-Series: ``annual_series`` applies them to every year of a run, and
-``write_series_file`` (run on the cluster by
-``scripts/slurm/write_plasim_series.py``) stores the result next to the
-product, so analyses on the laptop need only that small file.
+Reduction of a single run (§6): ``annual_series`` applies them to every
+year of a run, ``latitude_fields`` keeps a few fields by latitude, and
+``write_run_files`` (run on the cluster by
+``scripts/slurm/reduce_plasim_runs.py``) stores both next to the product, so
+analyses on the laptop need only these small files. Experiments of many runs
+are reduced by ``gsebm.plasim_experiments``.
 """
 
 from __future__ import annotations
@@ -710,18 +712,34 @@ def annual_series(zonal: xr.Dataset, sections: xr.Dataset) -> xr.Dataset:
     t, s = sections["t_section"], sections["s_section"]
     lat = sections["lsg_lat"]
     wet_area = zonal["lsg_row_wet_area"]
+    psi = sections["psi_atlantic"]
+    row_26n = int(np.argmin(np.abs(lat.values - 26.0)))
     series = {
         "tas_global": (area_mean(zonal["tas_zonal"], zonal), "K", "surface air temperature, global mean"),
         "tas_nh": (area_mean(zonal["tas_zonal"], zonal, "nh"), "K", "surface air temperature, NH mean"),
         "tas_sh": (area_mean(zonal["tas_zonal"], zonal, "sh"), "K", "surface air temperature, SH mean"),
+        "ts_global": (area_mean(zonal["ts_zonal"], zonal), "K", "surface temperature, global mean"),
+        "ts_nh": (area_mean(zonal["ts_zonal"], zonal, "nh"), "K", "surface temperature, NH mean"),
+        "ts_sh": (area_mean(zonal["ts_zonal"], zonal, "sh"), "K", "surface temperature, SH mean"),
+        "sst_global": (area_mean(zonal["sst_ocean_zonal"], zonal, ocean_only=True), "K",
+                       "slab-ocean temperature, mean over ocean"),
         "toa_net": (area_mean(zonal["rst_zonal"] + zonal["rlut_zonal"], zonal), "W m-2",
                     "net top-of-atmosphere flux, positive into the climate system"),
         "surface_net": (area_mean(zonal["surface_net_flux_zonal"], zonal), "W m-2", "net surface flux, global mean"),
+        "into_lsg": ((zonal["flukhea_zonal"] * wet_area).sum("lsg_lat") / wet_area.sum(), "W m-2",
+                     "heat flux into the top LSG layer, mean over the wet surface"),
+        "planetary_albedo": (-area_mean(zonal["rsut_zonal"], zonal)
+                             / area_mean(zonal["rst_zonal"] - zonal["rsut_zonal"], zonal), "1", "planetary albedo"),
         "ice_area_nh": (area_total(zonal["sic_ocean_zonal"], zonal, "nh") / 1e12, "1e6 km2", "sea-ice area, NH"),
         "ice_area_sh": (area_total(zonal["sic_ocean_zonal"], zonal, "sh") / 1e12, "1e6 km2", "sea-ice area, SH"),
+        "ice_volume_nh": (area_total(zonal["sit_ocean_zonal"], zonal, "nh") / 1e12, "1e3 km3", "sea-ice volume, NH"),
+        "ice_volume_sh": (area_total(zonal["sit_ocean_zonal"], zonal, "sh") / 1e12, "1e3 km3", "sea-ice volume, SH"),
         "acc": (zonal["acc"], "Sv", "Antarctic Circumpolar Current transport"),
-        "amoc_46_66n": (sections["psi_atlantic"].where((lat >= 46) & (lat <= 66)).max(("lsg_level", "lsg_lat")),
+        "amoc_46_66n": (psi.where((lat >= 46) & (lat <= 66)).max(("lsg_level", "lsg_lat")),
                         "Sv", "AMOC strength: maximum of the Atlantic overturning over all depths, 46-66 N"),
+        "amoc_26n": (psi.isel(lsg_lat=row_26n).max("lsg_level"), "Sv",
+                     f"maximum over depth of the Atlantic overturning at the row nearest 26 N "
+                     f"({float(lat[row_26n]):.2f} N)"),
         "sea_level": ((zonal["zeta_zonal"] * wet_area).sum("lsg_lat") / wet_area.sum(), "m", "global mean sea level"),
         "t_deep_nh": (volume_mean(t, sections, DEPTH_BANDS["2025_bottom"], "nh"), "K",
                       "ocean temperature, 2025 m to the bottom, NH"),
@@ -743,37 +761,78 @@ def annual_series(zonal: xr.Dataset, sections: xr.Dataset) -> xr.Dataset:
     return xr.Dataset(variables, coords=coords)
 
 
+def band_by_latitude(sections: xr.Dataset, levels: slice) -> xr.DataArray:
+    """Volume mean of the ocean temperature over a depth band, per LSG row (NaN where a row has no water)."""
+    t = sections["t_section"].isel(lsg_level=levels)
+    volume = sections["wet_volume"].isel(lsg_level=levels)
+    total = volume.sum("lsg_level")
+    return (t * volume).sum("lsg_level") / total.where(total > 0)
+
+
+def latitude_fields(zonal: xr.Dataset, sections: xr.Dataset) -> xr.Dataset:
+    """Annual fields by latitude of one run (§6): tas and sea-ice fraction on the T21 rows, ocean temperature
+    per depth band on the LSG rows."""
+    fields = {
+        "tas": (zonal["tas_zonal"], "K", "surface air temperature, zonal mean"),
+        "sic": (zonal["sic_ocean_zonal"], "1", "sea-ice fraction of the ocean, zonal mean"),
+    }
+    for band, levels in DEPTH_BANDS.items():
+        depths = band.replace("_", "-").replace("bottom", "the bottom")
+        fields[f"t_{band}"] = (band_by_latitude(sections, levels), "K", f"ocean temperature, {depths} m, row mean")
+    return xr.Dataset({name: values.assign_attrs(units=units, long_name=long_name)
+                       for name, (values, units, long_name) in fields.items()})
+
+
+def product_phase(product_dir: Path) -> str:
+    """The phase of the product in a run's folder (``spinup`` or ``stationary``), from its zonal file's name."""
+    product_dir = Path(product_dir)
+    for phase in ("spinup", "stationary"):
+        stem = product_stem(product_dir.name, phase)
+        if (product_dir / f"{stem}_zonal.nc").is_file():
+            return phase
+    raise FileNotFoundError(f"no zonal file in {product_dir}")
+
+
 def series_path(product_dir: Path, experiment_name: str, phase: str) -> Path:
     """The series file of a run: ``<stem>_series.nc`` in its product folder."""
     return Path(product_dir) / f"{product_stem(experiment_name, phase)}_series.nc"
 
 
-def write_series_file(product_dir: Path, phase: str, command: str) -> Path:
-    """Compute the annual series of the run whose product is in ``product_dir`` and write them there.
+def latitude_path(product_dir: Path, experiment_name: str, phase: str) -> Path:
+    """The latitude file of a run: ``<stem>_latitude.nc`` in its product folder."""
+    return Path(product_dir) / f"{product_stem(experiment_name, phase)}_latitude.nc"
 
-    The file records the product it was made from (version, labels) and this
-    code's git commit. It is written to ``*.partial`` and then renamed.
+
+def write_run_files(product_dir: Path, command: str) -> list[Path]:
+    """Reduce the run whose product is in ``product_dir`` and write its series and latitude files there (§6).
+
+    The files record the product they were made from (version, labels) and
+    this code's git commit. Each is written to ``*.partial`` and then renamed.
     """
     product_dir = Path(product_dir)
+    phase = product_phase(product_dir)
     stem = product_dir / product_stem(product_dir.name, phase)
     zonal = load_indicators(stem.with_name(stem.name + "_zonal.nc"))
     sections = load_indicators(stem.with_name(stem.name + "_sections.nc"))
-    series = annual_series(zonal, sections)
     commit, modified = git_revision()
-    series.attrs = {
+    attributes = {
         "schema": SERIES_SCHEMA, "experiment": product_dir.name, "phase": phase,
         "source_product_version": zonal.attrs["product_version"],
-        "first_label": int(series["year"][0]), "last_label": int(series["year"][-1]),
+        "first_label": int(zonal["year"][0]), "last_label": int(zonal["year"][-1]),
         "label_minus_model_year": zonal.attrs["label_minus_model_year"],
         "git_commit": commit, "git_modified": int(modified), "command": command,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "definitions": "Plasim_Indicators.md §6",
     }
     if "gsol0" in zonal.attrs:
-        series.attrs["gsol0"] = zonal.attrs["gsol0"]
-    target = series_path(product_dir, product_dir.name, phase)
-    partial = target.with_name(target.name + ".partial")
-    series.to_netcdf(partial, engine="h5netcdf",
-                     encoding={name: {"zlib": True, "complevel": 4} for name in series.data_vars})
-    partial.replace(target)
-    return target
+        attributes["gsol0"] = zonal.attrs["gsol0"]
+    written = []
+    for dataset, target in ((annual_series(zonal, sections), series_path(product_dir, product_dir.name, phase)),
+                            (latitude_fields(zonal, sections), latitude_path(product_dir, product_dir.name, phase))):
+        dataset.attrs = dict(attributes)
+        partial = target.with_name(target.name + ".partial")
+        dataset.to_netcdf(partial, engine="h5netcdf",
+                          encoding={name: {"zlib": True, "complevel": 4} for name in dataset.data_vars})
+        partial.replace(target)
+        written.append(target)
+    return written

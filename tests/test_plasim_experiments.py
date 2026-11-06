@@ -7,7 +7,7 @@ import unittest
 
 import numpy as np
 
-from gsebm.plasim_experiments import collect_experiment, latitude_fields, write_experiment_files
+from gsebm.plasim_experiments import collect_experiment, write_experiment_files
 from gsebm.plasim_indicators import load_indicators, product_stem
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -54,13 +54,6 @@ class ExperimentTests(unittest.TestCase):
         np.testing.assert_allclose(series["t_0_700"].values[1], 1.0)
         self.assertEqual(fields["tas"].dims, ("member", "year", "t21_lat"))
         self.assertEqual(fields["t_2025_bottom"].dims, ("member", "year", "lsg_lat"))
-
-    def test_latitude_fields_by_band(self):
-        zonal, sections = synthetic_product()
-        fields = latitude_fields(zonal, sections)
-        # Deep band: 3 K in the NH rows and 4 K in the SH rows of the synthetic sections.
-        np.testing.assert_allclose(fields["t_2025_bottom"].values[0], [3.0, 3.0, 4.0, 4.0])
-        np.testing.assert_allclose(fields["t_0_700"].values[0], 1.0)
 
     def test_files_round_trip(self):
         series, fields, _ = collect_experiment(self.members, self.header, self.root)

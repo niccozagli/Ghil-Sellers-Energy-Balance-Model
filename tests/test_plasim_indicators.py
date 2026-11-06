@@ -37,11 +37,13 @@ from gsebm.plasim_indicators import (
     run_indicators,
     run_status,
     salt_content,
+    latitude_fields,
+    latitude_path,
     series_path,
     t21_ocean_zonal_mean,
     volume_mean,
     write_indicator_files,
-    write_series_file,
+    write_run_files,
 )
 
 ROOT = get_repo_root()
@@ -153,20 +155,26 @@ class LaptopMeanTests(unittest.TestCase):
 
 
 def synthetic_product(years=(10, 11)) -> tuple[xr.Dataset, xr.Dataset]:
-    """Zonal and sections datasets with simple values: T21 fields 1 in the NH and 3 in the SH; ocean temperature
-    1, 2 and 3 in the three depth bands (deep SH 4); Atlantic overturning largest (7 Sv) at 50 N."""
+    """Zonal and sections datasets with simple values: T21 fields 1 in the NH and 3 in the SH (ts one more);
+    ocean temperature 1, 2 and 3 in the three depth bands (deep SH 4); Atlantic overturning largest (7 Sv) at
+    50 N, which is also the row nearest 26 N."""
     latitude, weight = t21_gaussian_grid()
     lsg_lat = np.array([60.0, 50.0, -10.0, -60.0])
     n = len(years)
     nh_sh = np.where(latitude > 0, 1.0, 3.0)
     zonal = xr.Dataset(
         {"tas_zonal": (("year", "t21_lat"), np.tile(nh_sh, (n, 1))),
+         "ts_zonal": (("year", "t21_lat"), np.tile(nh_sh + 1.0, (n, 1))),
+         "sst_ocean_zonal": (("year", "t21_lat"), np.full((n, latitude.size), 280.0)),
          "rst_zonal": (("year", "t21_lat"), np.full((n, latitude.size), 10.0)),
+         "rsut_zonal": (("year", "t21_lat"), np.full((n, latitude.size), -3.0)),
          "rlut_zonal": (("year", "t21_lat"), np.full((n, latitude.size), -4.0)),
          "surface_net_flux_zonal": (("year", "t21_lat"), np.full((n, latitude.size), 0.5)),
          "sic_ocean_zonal": (("year", "t21_lat"), np.ones((n, latitude.size))),
+         "sit_ocean_zonal": (("year", "t21_lat"), np.full((n, latitude.size), 2.0)),
          "acc": ("year", np.full(n, 14.0)),
          "zeta_zonal": (("year", "lsg_lat"), np.tile([1.0, 1.0, 3.0, 3.0], (n, 1))),
+         "flukhea_zonal": (("year", "lsg_lat"), np.full((n, 4), 2.0)),
          "t21_gaussian_weight": ("t21_lat", weight),
          "t21_ocean_fraction": ("t21_lat", np.where(latitude > 0, 0.25, 0.75)),
          "t21_band_area": ("t21_lat", weight * 10.0),
@@ -198,29 +206,43 @@ class SeriesTests(unittest.TestCase):
         series = annual_series(zonal, sections)
         self.assertEqual(list(series["year"].values), [10, 11])
         self.assertEqual(list(series["model_year"].values), [-490, -489])
-        expected = {"tas_global": 2.0, "tas_nh": 1.0, "tas_sh": 3.0, "toa_net": 6.0, "surface_net": 0.5,
-                    "acc": 14.0, "amoc_46_66n": 7.0, "sea_level": 2.0, "t_0_700": 1.0, "t_700_2025": 2.0,
-                    "t_2025_bottom": 3.5, "t_deep_nh": 3.0, "t_deep_sh": 4.0, "s_0_700": 34.7,
-                    "s_atlantic_0_700": 35.0}
+        expected = {"tas_global": 2.0, "tas_nh": 1.0, "tas_sh": 3.0, "ts_global": 3.0, "ts_nh": 2.0, "ts_sh": 4.0,
+                    "sst_global": 280.0, "toa_net": 6.0, "surface_net": 0.5, "into_lsg": 2.0,
+                    "planetary_albedo": 3.0 / 13.0, "acc": 14.0, "amoc_46_66n": 7.0, "amoc_26n": 7.0,
+                    "sea_level": 2.0, "t_0_700": 1.0, "t_700_2025": 2.0, "t_2025_bottom": 3.5, "t_deep_nh": 3.0,
+                    "t_deep_sh": 4.0, "s_0_700": 34.7, "s_atlantic_0_700": 35.0}
         for name, value in expected.items():
             np.testing.assert_allclose(series[name].values, value, err_msg=name)
         # Ice areas in 1e6 km2 = 1e12 m2, as area_total / 1e12.
         np.testing.assert_allclose(series["ice_area_nh"].values, 2.5 / 1e12)
         np.testing.assert_allclose(series["ice_area_sh"].values, 7.5 / 1e12)
+        np.testing.assert_allclose(series["ice_volume_nh"].values, 5.0 / 1e12)
         self.assertEqual(series["tas_global"].attrs["units"], "K")
 
-    def test_write_series_file_next_to_the_product(self):
+    def test_latitude_fields_by_band(self):
+        zonal, sections = synthetic_product()
+        fields = latitude_fields(zonal, sections)
+        # Deep band: 3 K in the NH rows and 4 K in the SH rows of the synthetic sections.
+        np.testing.assert_allclose(fields["t_2025_bottom"].values[0], [3.0, 3.0, 4.0, 4.0])
+        np.testing.assert_allclose(fields["t_0_700"].values[0], 1.0)
+        self.assertEqual(fields["tas"].dims, ("year", "t21_lat"))
+
+    def test_write_run_files_next_to_the_product(self):
         zonal, sections = synthetic_product()
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp) / EXP
             folder.mkdir()
-            stem = folder / product_stem(EXP, "spinup")
+            # The phase is read from the file names: here a stationary-phase product.
+            stem = folder / product_stem(EXP, "stationary")
             zonal.to_netcdf(stem.with_name(stem.name + "_zonal.nc"), engine="h5netcdf")
             sections.to_netcdf(stem.with_name(stem.name + "_sections.nc"), engine="h5netcdf")
-            path = write_series_file(folder, "spinup", "test")
-            self.assertEqual(path, series_path(folder, EXP, "spinup"))
-            self.assertFalse(path.with_name(path.name + ".partial").exists())
-            series = load_indicators(path)
+            paths = write_run_files(folder, "test")
+            self.assertEqual(paths, [series_path(folder, EXP, "stationary"), latitude_path(folder, EXP, "stationary")])
+            self.assertFalse(any(path.with_name(path.name + ".partial").exists() for path in paths))
+            series = load_indicators(paths[0])
+            fields = load_indicators(paths[1])
+        self.assertEqual(series.attrs["phase"], "stationary")
+        self.assertEqual(fields.attrs["experiment"], EXP)
         self.assertEqual(series.attrs["experiment"], EXP)
         self.assertEqual((series.attrs["first_label"], series.attrs["last_label"]), (10, 11))
         self.assertEqual(series.attrs["source_product_version"], PRODUCT_VERSION)
