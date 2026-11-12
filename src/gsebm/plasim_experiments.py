@@ -9,8 +9,9 @@ step (year 1 is the first year after its start label):
 - the annual series of ``annual_series`` (global, hemispheric and depth-band
   indicators), as (member, year);
 - the fields by latitude of ``latitude_fields``, as (member, year,
-  latitude): surface air temperature and sea-ice fraction on the T21 rows,
-  and ocean temperature in the three depth bands on the LSG rows.
+  latitude): surface air temperature, sea-ice fraction and the top, surface
+  and LSG-to-slab energy fluxes on the T21 rows, and ocean temperature in the
+  three depth bands on the LSG rows.
 
 ``write_experiment_files`` stores them as ``<name>_series.nc`` and
 ``<name>_latitude.nc``. Responses and every other analysis are computed from

@@ -770,11 +770,23 @@ def band_by_latitude(sections: xr.Dataset, levels: slice) -> xr.DataArray:
 
 
 def latitude_fields(zonal: xr.Dataset, sections: xr.Dataset) -> xr.Dataset:
-    """Annual fields by latitude of one run (§6): tas and sea-ice fraction on the T21 rows, ocean temperature
-    per depth band on the LSG rows."""
+    """Annual fields by latitude of one run (§6): tas, sea-ice fraction and the energy fluxes on the T21 rows,
+    ocean temperature per depth band on the LSG rows.
+
+    The fluxes are zonal means over the whole latitude band, so that their area integral from a pole gives
+    the implied meridional heat transport. ``lsg_to_slab`` is the ocean zonal mean of ``fldoa`` times the
+    ocean fraction f_j, i.e. the heat LSG gives the slab per unit area of the band (0 in rows without ocean).
+    """
     fields = {
         "tas": (zonal["tas_zonal"], "K", "surface air temperature, zonal mean"),
         "sic": (zonal["sic_ocean_zonal"], "1", "sea-ice fraction of the ocean, zonal mean"),
+        "absorbed_solar": (zonal["rst_zonal"], "W m-2", "net solar flux at the top, positive down, zonal mean"),
+        "outgoing_longwave": (-zonal["rlut_zonal"], "W m-2", "outgoing longwave flux at the top, positive up, "
+                              "zonal mean"),
+        "surface_net": (zonal["surface_net_flux_zonal"], "W m-2", "net surface flux (rss + rls + hfss + hfls), "
+                        "positive down, zonal mean"),
+        "lsg_to_slab": (zonal["fldoa_ocean_zonal"].fillna(0.0) * zonal["t21_ocean_fraction"], "W m-2",
+                        "heat flux from LSG to the slab (fldoa) per unit area of the latitude band"),
     }
     for band, levels in DEPTH_BANDS.items():
         depths = band.replace("_", "-").replace("bottom", "the bottom")

@@ -280,6 +280,17 @@ temperature per depth band and row (`t_0_700`, `t_700_2025`,
 `t_2025_bottom`: Σ_k `t_section` × `wet_volume` / Σ_k `wet_volume` over the
 band's levels).
 
+It also holds, on `t21_lat`, the energy fluxes as means over the whole
+latitude band (W m⁻²), so that A_j times each value, summed from a pole,
+gives the implied meridional heat transport:
+
+- `absorbed_solar` = `rst_zonal` (positive down);
+- `outgoing_longwave` = −`rlut_zonal` (positive up);
+- `surface_net` = `surface_net_flux_zonal` (positive down);
+- `lsg_to_slab` = `fldoa_ocean_zonal` × f_j, 0 in rows without ocean: the heat
+  LSG gives the 50 m slab per unit area of the band (`fldoa` positive warms
+  the slab, `oceanmod.f90`).
+
 Attributes give the product they were computed from (`source_product_version`,
 first and last label) and the code (`git_commit`). The files are rewritten in
 full each time, so rerun the script after the product changes.

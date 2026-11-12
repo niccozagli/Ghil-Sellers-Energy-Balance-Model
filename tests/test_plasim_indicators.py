@@ -171,6 +171,7 @@ def synthetic_product(years=(10, 11)) -> tuple[xr.Dataset, xr.Dataset]:
          "rsut_zonal": (("year", "t21_lat"), np.full((n, latitude.size), -3.0)),
          "rlut_zonal": (("year", "t21_lat"), np.full((n, latitude.size), -4.0)),
          "surface_net_flux_zonal": (("year", "t21_lat"), np.full((n, latitude.size), 0.5)),
+         "fldoa_ocean_zonal": (("year", "t21_lat"), np.tile(np.where(latitude > 80, np.nan, 2.0), (n, 1))),
          "sic_ocean_zonal": (("year", "t21_lat"), np.ones((n, latitude.size))),
          "sit_ocean_zonal": (("year", "t21_lat"), np.full((n, latitude.size), 2.0)),
          "acc": ("year", np.full(n, 14.0)),
@@ -227,6 +228,15 @@ class SeriesTests(unittest.TestCase):
         np.testing.assert_allclose(fields["t_2025_bottom"].values[0], [3.0, 3.0, 4.0, 4.0])
         np.testing.assert_allclose(fields["t_0_700"].values[0], 1.0)
         self.assertEqual(fields["tas"].dims, ("year", "t21_lat"))
+        # Fluxes over the whole band: rst 10, rlut -4 (outgoing 4), surface 0.5; fldoa 2 times the ocean
+        # fraction (0.25 NH, 0.75 SH), and 0 in the row without ocean values (NaN north of 80 N).
+        np.testing.assert_allclose(fields["absorbed_solar"].values, 10.0)
+        np.testing.assert_allclose(fields["outgoing_longwave"].values, 4.0)
+        np.testing.assert_allclose(fields["surface_net"].values, 0.5)
+        latitude = fields["t21_lat"].values
+        expected = np.where(latitude > 80, 0.0, np.where(latitude > 0, 0.5, 1.5))
+        np.testing.assert_allclose(fields["lsg_to_slab"].values, np.tile(expected, (2, 1)))
+        self.assertFalse(bool(fields["lsg_to_slab"].isnull().any()))
 
     def test_write_run_files_next_to_the_product(self):
         zonal, sections = synthetic_product()
@@ -378,6 +388,20 @@ class SampleDecadeTests(unittest.TestCase):
         _, weight = t21_gaussian_grid()
         direct = (tas.mean(axis=2) * weight).sum(axis=1) / weight.sum()
         np.testing.assert_allclose(area_mean(self.zonal.tas_zonal, self.zonal), direct, rtol=1e-6)
+
+    def test_latitude_fluxes_match_the_maps(self):
+        fields = latitude_fields(self.zonal, self.sections)
+        _, weight = t21_gaussian_grid()
+        net = ((fields.absorbed_solar - fields.outgoing_longwave) * weight).sum("t21_lat") / weight.sum()
+        self.assertAlmostEqual(float(net.mean()), -0.270, places=3)
+        # lsg_to_slab integrates over the band like the fldoa map with land set to 0.
+        with xr.open_dataset(SAMPLE_FILES[0], decode_times=False, engine="h5netcdf") as pla, \
+                xr.open_dataset(SAMPLE_FILES[1], decode_times=False, engine="h5netcdf") as oce:
+            ocean = pla["lsm"].values[0] < 0.5
+            fldoa = oce["fldoa"].values
+        direct = (np.where(ocean, fldoa, 0.0).mean(axis=2) * weight).sum(axis=1) / weight.sum()
+        by_band = (fields.lsg_to_slab * weight).sum("t21_lat") / weight.sum()
+        np.testing.assert_allclose(by_band, direct, rtol=0, atol=1e-5)  # W m-2; float32 products
 
     def test_sea_ice_salt_and_acc(self):
         zonal = self.zonal
